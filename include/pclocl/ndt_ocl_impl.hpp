@@ -1,5 +1,22 @@
-#include "ndt_omp.h"
 /*
+ * Copyright 2021 Tier IV inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This file includes works by PCL.
+ *
+ * ======== ORIGINAL LICENSE AND COPYRIGHTS BELOW ========
+ *
  * Software License Agreement (BSD License)
  *
  *  Point Cloud Library (PCL) - www.pointclouds.org
@@ -39,12 +56,65 @@
  *
  */
 
-#ifndef PCL_REGISTRATION_NDT_OMP_IMPL_H_
-#define PCL_REGISTRATION_NDT_OMP_IMPL_H_
+#ifndef PCL_REGISTRATION_NDT_OCL_IMPL_H_
+#define PCL_REGISTRATION_NDT_OCL_IMPL_H_
+
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include "ndt_ocl.h"
+
+#define KERNEL_FILE "kernel/compute_derivatives.cl"
+#define KERNEL_NAME "computeDerivativesCL"
+
+#define OCL_CREATE_BUFFER_CHECK(ret_mem, context, flags, size, host_ptr, errcode_ret) \
+  ret_mem = clCreateBuffer(context, flags, size, host_ptr, &errcode_ret); \
+  if (errcode_ret != CL_SUCCESS) {                                      \
+    return -1;                                                          \
+  }
+#define OCL_WRITE_BUFFER_CHECK(command_queue, buffer, blocking_write, offset, cb, ptr, num_events_in_wait_list, event_wait_list, event) \
+  if (clEnqueueWriteBuffer(command_queue, buffer, blocking_write, offset, cb, ptr, num_events_in_wait_list, event_wait_list, event) != CL_SUCCESS) { \
+    return -1;                                                          \
+  }
+#define OCL_SET_KERNEL_ARG_CHECK(kernel, arg_index, arg_size, arg_value) \
+  if (clSetKernelArg(kernel, arg_index, arg_size, arg_value) != CL_SUCCESS) { \
+    return -1;                                                          \
+  }
+#define OCL_SET_KERNEL_ARG_SVM_CHECK(kernel, arg_index, arg_value)      \
+  if (clSetKernelArgSVMPointer(kernel, arg_index, arg_value) != CL_SUCCESS) { \
+    return -1;                                                          \
+  }
+#define OCL_READ_BUFFER_CHECK(command_queue, buffer, blocking_read, offset, cb, ptr, num_events_in_wait_list, event_wait_list, event) \
+  if (clEnqueueReadBuffer(command_queue, buffer, blocking_read, offset, cb, ptr, num_events_in_wait_list, event_wait_list, event) != CL_SUCCESS) { \
+    return -1;                                                          \
+  }
+#define OCL_RELEASE_MEMORY_CHECK(mem)           \
+  if (mem != NULL) {                            \
+    clReleaseMemObject(mem);                    \
+    mem = NULL;                                 \
+  }
+#define OCL_RELEASE_KERNEL_CHECK(kernel)        \
+  if (kernel != NULL) {                         \
+    clReleaseKernel(kernel);                    \
+    kernel = NULL;                              \
+  }
+#define OCL_RELEASE_QUEUE_CHECK(queue)          \
+  if (queue != NULL) {                          \
+    clReleaseCommandQueue(queue);               \
+    queue = NULL;                               \
+  }
+#define OCL_RELEASE_PROGRAM_CHECK(program)      \
+  if (program != NULL) {                        \
+    clReleaseProgram(program);                  \
+    program = NULL;                             \
+  }
+#define OCL_RELEASE_CONTEXT_CHECK(context)      \
+  if (context != NULL) {                        \
+    clReleaseContext(context);                  \
+    context = NULL;                             \
+  }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget>
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::NormalDistributionsTransform ()
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::NormalDistributionsTransform ()
   : target_cells_ ()
   , resolution_ (1.0f)
   , step_size_ (0.1)
@@ -71,14 +141,42 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::NormalDistributi
   transformation_epsilon_ = 0.1;
   max_iterations_ = 35;
 
-  search_method = DIRECT7;
+  search_method = KDTREE; // only KDTREE allowed in OCL
   num_threads_ = omp_get_max_threads();
+
+  Queue_ = NULL;
+  k_compute_derivatives_ = NULL;
+  context_ = NULL;
+  program_ = NULL;
+  d_query_x_ = NULL;
+  d_query_y_ = NULL;
+  d_query_z_ = NULL;
+  d_inputs_x_ = NULL;
+  d_inputs_y_ = NULL;
+  d_inputs_z_ = NULL;
+  d_j_ang_ = NULL;
+  d_h_ang_ = NULL;
+  d_neighbor_candidates_ = NULL;
+  d_neighbor_candidate_dists_ = NULL;
+  d_scores_ = NULL;
+  d_score_gradients_ = NULL;
+  d_hessians_ = NULL;
+
+  // initialize OpenCL
+  cl_uint platform = 0;
+  cl_uint device = 0;
+  int ret = initializeOCL(platform, device);
+  if (ret != 0) {
+    std::cerr << "error : initializing OpenCL failed." << std::endl;
+    finalizeOCL();
+  }
+  target_cells_.setContext(context_);
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTransformation (PointCloudSource &output, const Eigen::Matrix4f &guess)
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransformation (PointCloudSource &output, const Eigen::Matrix4f &guess)
 {
   nr_iterations_ = 0;
   converged_ = false;
@@ -182,7 +280,7 @@ int omp_get_thread_num() { return 0; }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> double
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivatives(Eigen::Matrix<double, 6, 1> &score_gradient,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivatives(Eigen::Matrix<double, 6, 1> &score_gradient,
 	Eigen::Matrix<double, 6, 6> &hessian,
 	PointCloudSource &trans_cloud,
 	Eigen::Matrix<double, 6, 1> &p,
@@ -192,106 +290,522 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
 	hessian.setZero();
 	double score = 0;
 
-  std::vector<double> scores(input_->points.size());
-  std::vector<Eigen::Matrix<double, 6, 1>, Eigen::aligned_allocator<Eigen::Matrix<double, 6, 1>>> score_gradients(input_->points.size());
-  std::vector<Eigen::Matrix<double, 6, 6>, Eigen::aligned_allocator<Eigen::Matrix<double, 6, 6>>> hessians(input_->points.size());
-  for (std::size_t i = 0; i < input_->points.size(); i++) {
-		scores[i] = 0;
-		score_gradients[i].setZero();
-		hessians[i].setZero();
-	}
+  n_query_ = trans_cloud.size();
+  if (n_query_ > MAX_PCL_INPUT_NUM) {
+    std::cerr << "error : query points is too large." << std::endl;
+    return -1.0;
+  }
+  for (int i = 0; i < n_query_; i++) {
+    scores_[i] = 0.0f;
+    for (int j = 0; j < 6; j++) {
+      for (int k = 0; k < 1; k++) {
+        score_gradients_[i][j][k] = 0.0f;
+      }
+    }
+    for (int j = 0; j < 6; j++) {
+      for (int k = 0; k < 6; k++) {
+        hessians_[i][j][k] = 0.0f;
+      }
+    }
+  }
 
+  for (int i = 0; i < n_query_; i++) {
+    query_points_x_[i] = trans_cloud.points[i].x;
+    query_points_y_[i] = trans_cloud.points[i].y;
+    query_points_z_[i] = trans_cloud.points[i].z;
+  }
+
+  if (input_->points.size() > MAX_PCL_INPUT_NUM) {
+    std::cerr << "error : input_ points is too large." << std::endl;
+    return -1.0;
+  }
+  for (int i = 0; i < input_->points.size(); i++) {
+    input_points_x_[i] = input_->points[i].x;
+    input_points_y_[i] = input_->points[i].y;
+    input_points_z_[i] = input_->points[i].z;
+  }
+
+  gauss_d1_f_ = gauss_d1_;
+  gauss_d2_f_ = gauss_d2_;
+  gauss_d3_f_ = gauss_d3_;
 	// Precompute Angular Derivatives (eq. 6.19 and 6.21)[Magnusson 2009]
 	computeAngleDerivatives(p);
 
-  std::vector<std::vector<TargetGridLeafConstPtr>> neighborhoods(num_threads_);
-  std::vector<std::vector<float>> distancess(num_threads_);
+  // Update gradient and hessian for each point, line 17 in Algorithm 2 [Magnusson 2009]
+  // parallel in OpenCL
+  int ret;
+  ret = createOCLMemoryObjects();
+  if (ret != 0) {
+    std::cerr << "error : failed to create OpenCL memory objects" << std::endl;
+  }
+  else {
+	  ret =copyToOCLMemoryObjects();
+  }
+  if (ret != 0) {
+    std::cerr << "error : failed to copy to OpenCL memory objects" << std::endl;
+  }
+  else {
+    ret = computeDerivativesCL();
+  }
+  if (ret != 0) {
+    std::cerr << "error : failed to call computeDerivativesCL" << std::endl;
+  }
+  else {
+    ret = readOCLMemoryObjects();
+  }
+  // dump
+  union f_and_i {
+    uint32_t i;
+    float f;
+  } tmp;
+  if (computeTransformationCall_ == 170 && computeDerivativesCLCall_ == 1) {\
+    {
+      FILE * fp = fopen("scores.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "scores:\n");
+      for (int i = 0; i < n_query_; i++) {
+        tmp.f = scores_[i];
+        fprintf(fp, "%08x\n", tmp.i);
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("score_gradients.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "score_gradients:\n");
+      for (int i = 0; i < n_query_; i++) {
+        for (int j = 0; j < 6; j++) {
+          tmp.f = score_gradients_[i][j][0];
+          fprintf(fp, "%08x\n", tmp.i);
+        }
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("hessians.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "hessians:\n");
+      for (int i = 0; i < n_query_; i++) {
+        for (int j = 0; j < 6; j++) {
+          for (int k = 0; k < 6; k++) {
+            tmp.f = hessians_[i][j][k];
+            fprintf(fp, "%08x\n", tmp.i);
+          }
+        }
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("neighbor_candidate_indicis.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "neighbor_candidate_indicis:\n");
+      for (int i = 0; i < MAX_PCL_INPUT_NUM * LIMIT_NUM; i++) {
+        fprintf(fp, "%08x\n", neighbor_candidate_indexes_[i]);
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("neighbor_candidate_index_dists.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "neighbor_candidate_index_dists:\n");
+      for (int i = 0; i < MAX_PCL_INPUT_NUM * LIMIT_NUM; i++) {
+        tmp.f = neighbor_candidate_dists_[i];
+        fprintf(fp, "%08x\n", tmp.i);
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("j_ang.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "j_ang:\n");
+      for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 4; j++) {
+          tmp.f = j_ang_array_[i][j];
+          fprintf(fp, "%08x\n", tmp.i);
+        }
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fp = fopen("h_ang.txt", "w");
+      fprintf(fp, "# bin endian\n");
+      fprintf(fp, "h_ang:\n");
+      for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 4; j++) {
+          tmp.f = h_ang_array_[i][j];
+          fprintf(fp, "%08x\n", tmp.i);
+        }
+      }
+      fclose(fp);
+    }
+    {
+      FILE * fpx = fopen("query_points_x.txt", "w");
+      FILE * fpy = fopen("query_points_y.txt", "w");
+      FILE * fpz = fopen("query_points_z.txt", "w");
+      fprintf(fpx, "# big endian\n");
+      fprintf(fpy, "# big endian\n");
+      fprintf(fpz, "# big endian\n");
+      fprintf(fpx, "query_points_x:\n");
+      fprintf(fpy, "query_points_y:\n");
+      fprintf(fpz, "query_points_z:\n");
+      for (int i = 0; i < n_query_; i++) {
+        tmp.f = query_points_x_[i];
+        fprintf(fpx, "%08x\n", tmp.i);
+        tmp.f = query_points_y_[i];
+        fprintf(fpy, "%08x\n", tmp.i);
+        tmp.f = query_points_z_[i];
+        fprintf(fpz, "%08x\n", tmp.i);
+      }
+      fclose(fpx);
+      fclose(fpy);
+      fclose(fpz);
+    }
+    {
+      FILE * fpx = fopen("input_points_x.txt", "w");
+      FILE * fpy = fopen("input_points_y.txt", "w");
+      FILE * fpz = fopen("input_points_z.txt", "w");
+      fprintf(fpx, "# big endian\n");
+      fprintf(fpy, "# big endian\n");
+      fprintf(fpz, "# big endian\n");
+      fprintf(fpx, "input_points_x:\n");
+      fprintf(fpy, "input_points_y:\n");
+      fprintf(fpz, "input_points_z:\n");
+      for (int i = 0; i < n_query_; i++) {
+        tmp.f = input_points_x_[i];
+        fprintf(fpx, "%08x\n", tmp.i);
+        tmp.f = input_points_y_[i];
+        fprintf(fpy, "%08x\n", tmp.i);
+        tmp.f = input_points_z_[i];
+        fprintf(fpz, "%08x\n", tmp.i);
+      }
+      fclose(fpx);
+      fclose(fpy);
+      fclose(fpz);
+    }
+    {
+      FILE * fp = fopen("ndt_scalar_params.txt", "w");
+      fprintf(fp, "# big endian\n");
+      fprintf(fp, "# dump (170-0)\n");
+      fprintf(fp, "n_query:\n");
+      fprintf(fp, "%08lx\n", n_query_);
+      fprintf(fp, "limit:\n");
+      fprintf(fp, "%08x\n", limit_);
+      tmp.f = resolution_;
+      fprintf(fp, "resolution:\n");
+      fprintf(fp, "%08x\n", tmp.i);
+      tmp.f = gauss_d1_f_;
+      fprintf(fp, "gauss_d1_f_:\n");
+      fprintf(fp, "%08x\n", tmp.i);
+      tmp.f = gauss_d2_f_;
+      fprintf(fp, "gauss_d2_f_:\n");
+      fprintf(fp, "%08x\n", tmp.i);
+      tmp.f = gauss_d3_f_;
+      fprintf(fp, "gauss_d3_f_:\n");
+      fprintf(fp, "%08x\n", tmp.i);
+      fclose(fp);
+    }
+  }
+  if (ret != 0) {
+    std::cerr << "error : failed to read OpenCL memory objects" << std::endl;
+  }
+  releaseOCLMemoryObjects();
 
-	// Update gradient and hessian for each point, line 17 in Algorithm 2 [Magnusson 2009]
-#pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
-	for (std::size_t idx = 0; idx < input_->points.size(); idx++)
-	{
-		int thread_n = omp_get_thread_num();
-
-		// Original Point and Transformed Point
-		PointSource x_pt, x_trans_pt;
-		// Original Point and Transformed Point (for math)
-		Eigen::Vector3d x, x_trans;
-		// Occupied Voxel
-		TargetGridLeafConstPtr cell;
-		// Inverse Covariance of Occupied Voxel
-		Eigen::Matrix3d c_inv;
-
-		// Initialize Point Gradient and Hessian
-		Eigen::Matrix<float, 4, 6> point_gradient_;
-		Eigen::Matrix<float, 24, 6> point_hessian_;
-		point_gradient_.setZero();
-		point_gradient_.block<3, 3>(0, 0).setIdentity();
-		point_hessian_.setZero();
-
-		x_trans_pt = trans_cloud.points[idx];
-
-		auto& neighborhood = neighborhoods[thread_n];
-		auto& distances = distancess[thread_n];
-
-		// Find neighbors (Radius search has been experimentally faster than direct neighbor checking.
-		switch (search_method) {
-		case KDTREE:
-			target_cells_.radiusSearch(x_trans_pt, resolution_, neighborhood, distances);
-			break;
-		case DIRECT26:
-			target_cells_.getNeighborhoodAtPoint(x_trans_pt, neighborhood);
-			break;
-		default:
-		case DIRECT7:
-			target_cells_.getNeighborhoodAtPoint7(x_trans_pt, neighborhood);
-			break;
-		case DIRECT1:
-			target_cells_.getNeighborhoodAtPoint1(x_trans_pt, neighborhood);
-			break;
-		}
-
-		double score_pt = 0;
-		Eigen::Matrix<double, 6, 1> score_gradient_pt = Eigen::Matrix<double, 6, 1>::Zero();
-		Eigen::Matrix<double, 6, 6> hessian_pt = Eigen::Matrix<double, 6, 6>::Zero();
-
-		for (typename std::vector<TargetGridLeafConstPtr>::iterator neighborhood_it = neighborhood.begin(); neighborhood_it != neighborhood.end(); neighborhood_it++)
-		{
-			cell = *neighborhood_it;
-			x_pt = input_->points[idx];
-			x = Eigen::Vector3d(x_pt.x, x_pt.y, x_pt.z);
-
-			x_trans = Eigen::Vector3d(x_trans_pt.x, x_trans_pt.y, x_trans_pt.z);
-
-			// Denorm point, x_k' in Equations 6.12 and 6.13 [Magnusson 2009]
-			x_trans -= cell->getMean();
-			// Uses precomputed covariance for speed.
-			c_inv = cell->getInverseCov();
-
-			// Compute derivative of transform function w.r.t. transform vector, J_E and H_E in Equations 6.18 and 6.20 [Magnusson 2009]
-			computePointDerivatives(x, point_gradient_, point_hessian_);
-			// Update score, gradient and hessian, lines 19-21 in Algorithm 2, according to Equations 6.10, 6.12 and 6.13, respectively [Magnusson 2009]
-			score_pt += updateDerivatives(score_gradient_pt, hessian_pt, point_gradient_, point_hessian_, x_trans, c_inv, compute_hessian);
-		}
-
-		scores[idx] = score_pt;
-		score_gradients[idx].noalias() = score_gradient_pt;
-		hessians[idx].noalias() = hessian_pt;
-	}
-
-  // Ensure that the result is invariant against the summing up order
-  for (std::size_t i = 0; i < input_->points.size(); i++) {
-		score += scores[i];
-		score_gradient += score_gradients[i];
-		hessian += hessians[i];
-	}
+  for (int i = 0; i < n_query_; i++) {
+    score += scores_[i];
+    for (int j = 0; j < 6; j++) {
+      for (int k = 0; k < 1; k++) {
+        score_gradient(j,k) += score_gradients_[i][j][k];
+      }
+    }
+    for (int j = 0; j < 6; j++) {
+      for (int k = 0; k < 6; k++) {
+        hessian(j,k) += hessians_[i][j][k];
+      }
+    }
+  }
 
 	return (score);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::initializeOCL(cl_uint platform, cl_uint device)
+{
+  size_t source_size, ret_size;
+  cl_uint num_platforms, num_devices;
+  cl_int ret;
+
+  // platform
+  ret = clGetPlatformIDs(MAX_PLATFORMS, platform_id_, &num_platforms);
+  if (ret != CL_SUCCESS) {
+    std::cerr << "error : clGetPlatformIDs() error " << ret << std::endl;
+    return 1;
+  }
+  if (platform >= num_platforms) {
+    std::cerr << "error : platform = " << platform << "(limit = " << num_platforms - 1 << ")" << std::endl;
+    return 1;
+  }
+
+  // device
+  ret = clGetDeviceIDs(platform_id_[platform], CL_DEVICE_TYPE_ALL, MAX_DEVICES, device_id_, &num_devices);
+  if (ret != CL_SUCCESS) {
+    std::cerr << "error : clGetDeviceIDs() error " << ret << std::endl;
+    return 1;
+  }
+  if (device >= num_devices) {
+    std::cerr << "error : device = " << device << "(limit = " << num_devices - 1 << ")" << std::endl;
+    return 1;
+  }
+
+  // device name (optional information)
+  {
+    char str[BUFSIZ];
+    ret = clGetDeviceInfo(device_id_[device], CL_DEVICE_NAME, sizeof(str), str, &ret_size);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "error : clGetDeviceInfo() error " << ret << std::endl;
+      return 1;
+    }
+    std::cout << "info : " << str << " (platform = " << platform << ", device = " << device << ")" << std::endl;
+  }
+
+  // context
+  context_ = clCreateContext(NULL, 1, &device_id_[device], NULL, NULL, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cerr << "error : clCreateContext() error " << ret << std::endl;
+    return 1;
+  }
+
+  // command queue
+  Queue_ = clCreateCommandQueue(context_, device_id_[device], 0, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cerr << "error : clCreateCommandQueue() error " << ret << std::endl;
+    return 1;
+  }
+
+  // source
+  {
+    FILE * fp;
+    std::string kernel_file_path = ament_index_cpp::get_package_share_directory("ndt_ocl") + "/" + KERNEL_FILE;
+    if ((fp = fopen(kernel_file_path.c_str(), "r")) == NULL) {
+      std::cerr << "error : could not open " << kernel_file_path << std::endl;
+      return 1;
+    }
+    // alloc
+    char source_str[MAX_SOURCE_SIZE];
+    char * source_ptr = source_str;
+    source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
+    // create program
+    program_ = clCreateProgramWithSource(context_, 1, (const char **)&source_ptr, (const size_t *)&source_size, &ret);
+    fclose(fp);
+    if (ret != CL_SUCCESS) {
+      std::cerr << "error : clCreateProgramWithSource() error " << ret << std::endl;
+      return 1;
+    }
+  }
+
+  // build program
+  if (clBuildProgram(program_, 1, &device_id_[device], NULL, NULL, NULL) != CL_SUCCESS) {
+    std::cerr << "error : clBuildProgram() error" << std::endl;
+    size_t logSize;
+    clGetProgramBuildInfo(program_, device_id_[device], CL_PROGRAM_BUILD_LOG, 0, NULL, &logSize);
+    std::unique_ptr<char[]> buildLog(new char[logSize + 1]);
+    clGetProgramBuildInfo(program_, device_id_[device], CL_PROGRAM_BUILD_LOG, logSize, buildLog.get(), NULL);
+    std::cout << buildLog.get() << std::endl;
+    return 1;
+  }
+
+  // kernel
+  k_compute_derivatives_ = clCreateKernel(program_, KERNEL_NAME, &ret);
+  if (ret != CL_SUCCESS) {
+    std::cerr << "error : clCreateKernel() error" << std::endl;
+    return 1;
+  }
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::createOCLMemoryObjects(void)
+{
+  if (n_query_ > MAX_PCL_INPUT_NUM) {
+    return -1;
+  }
+
+  size_t source_size, ret_size, points_size, map_points_size;
+  const size_t j_ang_size = 8 * 4 * sizeof(float);
+  const size_t h_ang_size = 16 * 4 * sizeof(float);
+  cl_uint num_platforms, num_devices;
+  cl_int ret;
+
+  // memory object
+  points_size = n_query_ * sizeof(float);
+  neighbor_candidates_size_float_ = limit_ * n_query_ * sizeof(float);
+  neighbor_candidates_size_int_ = limit_ * n_query_ * sizeof(int);
+  score_gradients_size_ = n_query_ * 6 * 1 * sizeof(float);
+  hessians_size_ = n_query_ * 6 * 6 * sizeof(float);
+  score_size_ = points_size;
+
+  OCL_CREATE_BUFFER_CHECK(d_query_x_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_query_y_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_query_z_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_inputs_x_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_inputs_y_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_inputs_z_, context_, CL_MEM_READ_WRITE, points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_neighbor_candidates_, context_, CL_MEM_READ_WRITE, neighbor_candidates_size_int_, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_neighbor_candidate_dists_, context_, CL_MEM_READ_WRITE, neighbor_candidates_size_float_, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_j_ang_, context_, CL_MEM_READ_WRITE, j_ang_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_h_ang_, context_, CL_MEM_READ_WRITE, h_ang_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_scores_, context_, CL_MEM_READ_WRITE, score_size_, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_score_gradients_, context_, CL_MEM_READ_WRITE, score_gradients_size_, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_hessians_, context_, CL_MEM_READ_WRITE, hessians_size_, NULL, ret);
+
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::copyToOCLMemoryObjects()
+{
+  if (n_query_ > MAX_PCL_INPUT_NUM) {
+    return -1;
+  }
+
+  size_t points_size, map_points_size, map_size, points_size_int, map_mean_size, map_inverse_cov_size;
+  const size_t j_ang_size = 8 * 4 * sizeof(float);
+  const size_t h_ang_size = 16 * 4 * sizeof(float);
+
+  points_size = n_query_ * sizeof(float);
+  map_size = target_cells_.num_centroids_ * sizeof(float);
+  map_mean_size = target_cells_.num_centroids_ * 3 * sizeof(float);
+  map_inverse_cov_size = target_cells_.num_centroids_ * 3 * 3 * sizeof(float);
+  points_size_int = target_cells_.num_centroids_ * sizeof(int);
+  score_gradients_size_ = n_query_ * 6 * 1 * sizeof(float);
+  hessians_size_ = n_query_ * 6 * 6 * sizeof(float);
+  for (int i=0; i < 8; i++) {
+    for (int j=0; j < 4; j++) {
+      j_ang_array_[i][j] = j_ang(i, j);
+    }
+  }
+  for (int i=0; i < 16; i++) {
+    for (int j=0; j < 4; j++) {
+      h_ang_array_[i][j] = h_ang(i, j);
+    }
+  }
+
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_query_x_, CL_TRUE, 0, points_size, query_points_x_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_query_y_, CL_TRUE, 0, points_size, query_points_y_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_query_z_, CL_TRUE, 0, points_size, query_points_z_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_map_points_x_, CL_TRUE, 0, map_size, target_cells_.map_points_x_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_map_points_y_, CL_TRUE, 0, map_size, target_cells_.map_points_y_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_map_points_z_, CL_TRUE, 0, map_size, target_cells_.map_points_z_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_node_indexes_, CL_TRUE, 0, points_size_int, target_cells_.node_indexes_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_map_mean_, CL_TRUE, 0, map_mean_size, target_cells_.map_mean_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_map_inverse_cov_, CL_TRUE, 0, map_inverse_cov_size, target_cells_.map_inverse_cov_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_inputs_x_, CL_TRUE, 0, points_size, input_points_x_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_inputs_y_, CL_TRUE, 0, points_size, input_points_y_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_inputs_z_, CL_TRUE, 0, points_size, input_points_z_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_j_ang_, CL_TRUE, 0, j_ang_size, j_ang_array_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_h_ang_, CL_TRUE, 0, h_ang_size, h_ang_array_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_scores_, CL_TRUE, 0, score_size_, scores_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_score_gradients_, CL_TRUE, 0, score_gradients_size_, score_gradients_, 0, NULL, NULL);
+  OCL_WRITE_BUFFER_CHECK(Queue_, d_hessians_, CL_TRUE, 0, hessians_size_, hessians_, 0, NULL, NULL);
+
+  return 0;
+}
+
+template <typename PointSource, typename PointTarget>
+int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativesCL(void)
+{
+  const size_t local_item_size = 256;
+  size_t global_item_size;
+  cl_int ret;
+  computeDerivativesCLCall_++;
+  // set arguments
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 0, sizeof(cl_mem), (void *)&d_query_x_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 1, sizeof(cl_mem), (void *)&d_query_y_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 2, sizeof(cl_mem), (void *)&d_query_z_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 3, sizeof(cl_mem), (void *)&target_cells_.d_map_points_x_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 4, sizeof(cl_mem), (void *)&target_cells_.d_map_points_y_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 5, sizeof(cl_mem), (void *)&target_cells_.d_map_points_z_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 6, sizeof(cl_mem), (void *)&target_cells_.d_node_indexes_); // ok
+  OCL_SET_KERNEL_ARG_SVM_CHECK(k_compute_derivatives_, 7, target_cells_.kdtree_root_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 8, sizeof(int), (void *)&n_query_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 9, sizeof(int), (void *)&limit_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 10, sizeof(float), (void *)&resolution_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 11, sizeof(cl_mem), (void *)&d_neighbor_candidates_); // ok [out]
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 12, sizeof(cl_mem), (void *)&d_neighbor_candidate_dists_); // ok [out]
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 13, sizeof(cl_mem), (void *)&target_cells_.d_map_mean_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 14, sizeof(cl_mem), (void *)&target_cells_.d_map_inverse_cov_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 15, sizeof(cl_mem), (void *)&d_inputs_x_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 16, sizeof(cl_mem), (void *)&d_inputs_y_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 17, sizeof(cl_mem), (void *)&d_inputs_z_); // ok (lidar)
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 18, sizeof(cl_mem), (void *)&d_j_ang_); // ok input
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 19, sizeof(cl_mem), (void *)&d_h_ang_); // ok input
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 20, sizeof(cl_mem), (void *)&d_scores_); // ok [out]
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 21, sizeof(cl_mem), (void *)&d_score_gradients_); // ok [out]
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 22, sizeof(cl_mem), (void *)&d_hessians_); // ok [out]
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 23, sizeof(float), (void*)&gauss_d1_f_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 24, sizeof(float), (void*)&gauss_d2_f_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 25, sizeof(float), (void*)&gauss_d3_f_); // ok
+
+  // work item
+  global_item_size = ((target_cells_.num_centroids_ + local_item_size - 1) / local_item_size) * local_item_size;
+
+  // kicking the kernel
+  ret = clEnqueueNDRangeKernel(Queue_, k_compute_derivatives_, 1, NULL, &global_item_size, &local_item_size, 0, NULL, NULL);
+  if (CL_SUCCESS != ret) {
+    std::cerr << "error : clEnqueueNDRangeKernel error code " << ret << std::endl;
+    return -1;
+  }
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::readOCLMemoryObjects()
+{
+  OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidates_, CL_TRUE, 0, neighbor_candidates_size_int_, neighbor_candidate_indexes_, 0, NULL, NULL);
+  OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidate_dists_, CL_TRUE, 0, neighbor_candidates_size_float_, neighbor_candidate_dists_, 0, NULL, NULL);
+  OCL_READ_BUFFER_CHECK(Queue_, d_scores_, CL_TRUE, 0, score_size_, scores_, 0, NULL, NULL);
+  OCL_READ_BUFFER_CHECK(Queue_, d_score_gradients_, CL_TRUE, 0, score_gradients_size_, score_gradients_, 0, NULL, NULL);
+  OCL_READ_BUFFER_CHECK(Queue_, d_hessians_, CL_TRUE, 0, hessians_size_, hessians_, 0, NULL, NULL);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+void pclocl::NormalDistributionsTransform<PointSource, PointTarget>::releaseOCLMemoryObjects()
+{
+  OCL_RELEASE_MEMORY_CHECK(d_query_x_);
+  OCL_RELEASE_MEMORY_CHECK(d_query_y_);
+  OCL_RELEASE_MEMORY_CHECK(d_query_z_);
+  OCL_RELEASE_MEMORY_CHECK(d_neighbor_candidates_);
+  OCL_RELEASE_MEMORY_CHECK(d_neighbor_candidate_dists_);
+  OCL_RELEASE_MEMORY_CHECK(d_inputs_x_);
+  OCL_RELEASE_MEMORY_CHECK(d_inputs_y_);
+  OCL_RELEASE_MEMORY_CHECK(d_inputs_z_);
+  OCL_RELEASE_MEMORY_CHECK(d_j_ang_);
+  OCL_RELEASE_MEMORY_CHECK(d_h_ang_);
+  OCL_RELEASE_MEMORY_CHECK(d_scores_);
+  OCL_RELEASE_MEMORY_CHECK(d_score_gradients_);
+  OCL_RELEASE_MEMORY_CHECK(d_hessians_);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointSource, typename PointTarget>
+void pclocl::NormalDistributionsTransform<PointSource, PointTarget>::finalizeOCL()
+{
+  target_cells_.finalize();
+  releaseOCLMemoryObjects();
+  OCL_RELEASE_KERNEL_CHECK(k_compute_derivatives_);
+  OCL_RELEASE_QUEUE_CHECK(Queue_);
+  OCL_RELEASE_PROGRAM_CHECK(program_);
+  OCL_RELEASE_CONTEXT_CHECK(context_);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeAngleDerivatives(Eigen::Matrix<double, 6, 1> &p, bool compute_hessian)
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeAngleDerivatives(Eigen::Matrix<double, 6, 1> &p, bool compute_hessian)
 {
 	// Simplified math for near 0 angles
 	double cx, cy, cz, sx, sy, sz;
@@ -400,7 +914,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeAngleDeri
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computePointDerivatives(Eigen::Vector3d &x, Eigen::Matrix<float, 4, 6>& point_gradient_, Eigen::Matrix<float, 24, 6>& point_hessian_, bool compute_hessian) const
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computePointDerivatives(Eigen::Vector3d &x, Eigen::Matrix<float, 4, 6>& point_gradient_, Eigen::Matrix<float, 24, 6>& point_hessian_, bool compute_hessian) const
 {
 	Eigen::Vector4f x4(x[0], x[1], x[2], 0.0f);
 
@@ -445,7 +959,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computePointDeri
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computePointDerivatives(Eigen::Vector3d &x, Eigen::Matrix<double, 3, 6>& point_gradient_, Eigen::Matrix<double, 18, 6>& point_hessian_, bool compute_hessian) const
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computePointDerivatives(Eigen::Vector3d &x, Eigen::Matrix<double, 3, 6>& point_gradient_, Eigen::Matrix<double, 18, 6>& point_hessian_, bool compute_hessian) const
 {
 	// Calculate first derivative of Transformation Equation 6.17 w.r.t. transform vector p.
 	// Derivative w.r.t. ith element of transform vector corresponds to column i, Equation 6.18 and 6.19 [Magnusson 2009]
@@ -486,7 +1000,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computePointDeri
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> double
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateDerivatives(Eigen::Matrix<double, 6, 1> &score_gradient,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::updateDerivatives(Eigen::Matrix<double, 6, 1> &score_gradient,
 	Eigen::Matrix<double, 6, 6> &hessian,
 	const Eigen::Matrix<float, 4, 6> &point_gradient4,
 	const Eigen::Matrix<float, 24, 6> &point_hessian_,
@@ -542,7 +1056,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateDerivative
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeHessian (Eigen::Matrix<double, 6, 6> &hessian,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeHessian (Eigen::Matrix<double, 6, 6> &hessian,
                                                                              PointCloudSource &trans_cloud, Eigen::Matrix<double, 6, 1> &)
 {
   // Original Point and Transformed Point
@@ -615,7 +1129,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeHessian (
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> void
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateHessian (Eigen::Matrix<double, 6, 6> &hessian,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::updateHessian (Eigen::Matrix<double, 6, 6> &hessian,
 	const Eigen::Matrix<double, 3, 6> &point_gradient_,
 	const Eigen::Matrix<double, 18, 6> &point_hessian_,
 	const Eigen::Vector3d &x_trans,
@@ -650,7 +1164,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateHessian (E
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> bool
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateIntervalMT (double &a_l, double &f_l, double &g_l,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::updateIntervalMT (double &a_l, double &f_l, double &g_l,
                                                                                double &a_u, double &f_u, double &g_u,
                                                                                double a_t, double f_t, double g_t)
 {
@@ -691,7 +1205,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::updateIntervalMT
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> double
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::trialValueSelectionMT (double a_l, double f_l, double g_l,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::trialValueSelectionMT (double a_l, double f_l, double g_l,
                                                                                     double a_u, double f_u, double g_u,
                                                                                     double a_t, double f_t, double g_t)
 {
@@ -774,7 +1288,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::trialValueSelect
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> double
-pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeStepLengthMT (const Eigen::Matrix<double, 6, 1> &x, Eigen::Matrix<double, 6, 1> &step_dir, double step_init, double step_max,
+pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeStepLengthMT (const Eigen::Matrix<double, 6, 1> &x, Eigen::Matrix<double, 6, 1> &step_dir, double step_init, double step_max,
                                                                                   double step_min, double &score, Eigen::Matrix<double, 6, 1> &score_gradient, Eigen::Matrix<double, 6, 6> &hessian,
                                                                                   PointCloudSource &trans_cloud)
 {
@@ -937,7 +1451,7 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeStepLengt
 
 
 template<typename PointSource, typename PointTarget>
-double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::calculateScore(const PointCloudSource & trans_cloud) const
+double pclocl::NormalDistributionsTransform<PointSource, PointTarget>::calculateScore(const PointCloudSource & trans_cloud) const
 {
 	double score = 0;
 

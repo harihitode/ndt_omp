@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>ndt_omp</name>
+  <name>ndt_ocl</name>
   <version>0.0.0</version>
-  <description>OpenMP boosted NDT and GICP algorithms</description>
+  <description>OpenMP or OpenCL boosted NDT and GICP algorithms</description>
 
+  <maintainer email="daichi.murakami@tier4.jp">Daichi Murakami</maintainer>
   <maintainer email="koide@aisl.cs.tut.ac.jp">koide</maintainer>
 
   <license>BSD</license>
@@ -16,6 +17,9 @@
   <depend condition="$ROS_VERSION == 1">roscpp</depend>
 
   <depend condition="$ROS_VERSION == 2">libpcl-all-dev</depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
 
   <export>
     <build_type condition="$ROS_VERSION == 1">catkin</build_type>

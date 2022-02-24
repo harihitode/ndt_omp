@@ -1,4 +1,22 @@
 /*
+ * Copyright 2021 Tier IV inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This file includes works by PCL.
+ *
+ * ======== ORIGINAL LICENSE AND COPYRIGHTS BELOW ========
+ *
  * Software License Agreement (BSD License)
  *
  *  Point Cloud Library (PCL) - www.pointclouds.org
@@ -38,16 +56,28 @@
  *
  */
 
-#ifndef PCL_REGISTRATION_NDT_OMP_H_
-#define PCL_REGISTRATION_NDT_OMP_H_
+#ifndef PCL_REGISTRATION_NDT_OCL_H_
+#define PCL_REGISTRATION_NDT_OCL_H_
 
 #include <pcl/registration/registration.h>
 #include <pcl/search/impl/search.hpp>
-#include "voxel_grid_covariance_omp.h"
+#include "voxel_grid_covariance_ocl.h"
 
 #include <unsupported/Eigen/NonLinearOptimization>
 
-namespace pclomp
+#define CL_USE_DEPRECATED_OPENCL_1_2_APIS
+#define CL_HPP_TARGET_OPENCL_VERSION 210
+#define CL_HPP_ENABLE_EXCEPTIONS
+
+#include <CL/cl2.hpp>
+
+#define MAX_PLATFORMS (10)
+#define MAX_DEVICES (10)
+#define MAX_SOURCE_SIZE (100000)
+#define MAX_PCL_INPUT_NUM (1500)
+#define LIMIT_NUM (8)
+
+namespace pclocl
 {
 	enum NeighborSearchMethod {
 		KDTREE,
@@ -84,7 +114,7 @@ namespace pclomp
 		typedef pcl::PointIndices::ConstPtr PointIndicesConstPtr;
 
 		/** \brief Typename of searchable voxel grid containing mean and covariance. */
-		typedef pclomp::VoxelGridCovariance<PointTarget> TargetGrid;
+		typedef pclocl::VoxelGridCovariance<PointTarget> TargetGrid;
 		/** \brief Typename of pointer to searchable voxel grid. */
 		typedef TargetGrid* TargetGridPtr;
 		/** \brief Typename of const pointer to searchable voxel grid. */
@@ -110,7 +140,7 @@ namespace pclomp
 		NormalDistributionsTransform();
 
 		/** \brief Empty destructor */
-		virtual ~NormalDistributionsTransform() {}
+		virtual ~NormalDistributionsTransform() { finalizeOCL(); }
 
 		void setNumThreads(int n)
 		{
@@ -472,6 +502,41 @@ namespace pclomp
 			return (g_a - mu * g_0);
 		}
 
+    /** \brief Initialize OpenCL.
+     * \param[in] platform OpenCL platform ID.
+     * \param[in] device OpenCL device ID.
+     * \return 0 if initialize succeeded, other than 0 if failed.
+     */
+    int initializeOCL(cl_uint platform, cl_uint device);
+
+    /** \brief Create OpenCL memory objects.
+     * \return 0 if creation succeeded, other than 0 if failed.
+     */
+    int createOCLMemoryObjects();
+
+    /** \brief Copy host data to OpenCL memory objects.
+     * \return 0 if copy succeeded, other than 0 if failed.
+     */
+    int copyToOCLMemoryObjects();
+
+    /** \brief call computeDerivativesCL in kernel code.
+     * \return 0 if call succeeded, other than 0 if failed.
+     */
+    int computeDerivativesCL();
+
+    /** \brief read OpenCL memory objects.
+     * \return 0 if read succeeded, other than 0 if failed.
+     */
+    int readOCLMemoryObjects();
+
+    /** \brief release OpenCL memory objects.
+     */
+    void releaseOCLMemoryObjects();
+
+    /** \brief finalize OpenCL.
+     */
+    void finalizeOCL();
+
 		/** \brief The voxel grid generated from target cloud containing point means and covariances. */
 		TargetGrid target_cells_;
 
@@ -524,8 +589,80 @@ namespace pclomp
 	Eigen::Matrix<double, 6, 6> hessian_;
 	std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> transformation_array_;
 
+    /** \brief Limit of neighbors on radius search. */
+    int limit_;
+
+    /** \brief OpenCL platform ID. */
+    cl_platform_id platform_id_[MAX_PLATFORMS];
+
+    /** \brief OpenCL device ID. */
+    cl_device_id device_id_[MAX_DEVICES];
+
+    /** \brief OpenCL queue. */
+    cl_command_queue Queue_;
+
+    /** \brief OpenCL kernel. */
+    cl_kernel k_compute_derivatives_;
+
+    /** \brief OpenCL context. */
+    cl_context context_;
+
+    /** \brief OpenCL program. */
+    cl_program program_;
+
+    /** \brief OpenCL memory objects. */
+    cl_mem d_query_x_, d_query_y_, d_query_z_;
+    cl_mem d_inputs_x_, d_inputs_y_, d_inputs_z_;
+    cl_mem d_j_ang_, d_h_ang_;
+    cl_mem d_neighbor_candidates_, d_neighbor_candidate_dists_;
+    cl_mem d_scores_, d_score_gradients_, d_hessians_;
+
+    /** \brief 1-D array of query points in radius search. */
+    float query_points_x_[MAX_PCL_INPUT_NUM];
+    float query_points_y_[MAX_PCL_INPUT_NUM];
+    float query_points_z_[MAX_PCL_INPUT_NUM];
+
+    /** \brief 1-D array of \ref input_ points in radius search. */
+    float input_points_x_[MAX_PCL_INPUT_NUM];
+    float input_points_y_[MAX_PCL_INPUT_NUM];
+    float input_points_z_[MAX_PCL_INPUT_NUM];
+
+    /** \brief 2-D array of \ref j_ang . */
+    float j_ang_array_[8][4];
+
+    /** \brief 2-D array of \ref h_ang . */
+    float h_ang_array_[16][4];
+
+    /** \brief number of query points in radius search. */
+    size_t n_query_;
+
+    /** \brief size of memory objects. */
+    size_t neighbor_candidates_size_int_, neighbor_candidates_size_float_;
+    size_t score_size_, score_gradients_size_, hessians_size_;
+
+    /** \brief indexes of neighbor candidates in radius search. */
+    int neighbor_candidate_indexes_[MAX_PCL_INPUT_NUM * LIMIT_NUM];
+
+    /** \brief distances to neighbor candidates in radius search. */
+    float neighbor_candidate_dists_[MAX_PCL_INPUT_NUM * LIMIT_NUM];
+
+    /** \brief scores of query points. */
+    float scores_[MAX_PCL_INPUT_NUM];
+
+    /** \brief gradient scores of query points. */
+    float score_gradients_[MAX_PCL_INPUT_NUM][6][1];
+
+    /** \brief hessians of query points. */
+    float hessians_[MAX_PCL_INPUT_NUM][6][6];
+
+    /** \brief float value of \ref gauss_d1_ , \ref gauss_d2_ , \ref gauss_d3_ . */
+    float gauss_d1_f_, gauss_d2_f_, gauss_d3_f_;
+
 	public:
 		NeighborSearchMethod search_method;
+
+    size_t computeDerivativesCLCall_;
+    size_t computeTransformationCall_;
 
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 	};
