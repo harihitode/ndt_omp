@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.5)
-project(ndt_omp)
+project(ndt_ocl)
 
 add_definitions(-std=c++14)
-set(CMAKE_CXX_FLAGS "-std=c++14")
-add_compile_options(-march=native)
+#set(CMAKE_CXX_FLAGS "-std=c++14 -MM -E")
+#add_compile_options(-march=native)
 
 # pcl 1.7 causes a segfault when it is built with debug mode
 set(CMAKE_BUILD_TYPE "RELEASE")
@@ -35,7 +35,7 @@ endif()
 ###################################
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES ndt_omp
+  LIBRARIES ndt_ocl
 )
 
 ###########
@@ -46,22 +46,9 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-add_library(ndt_omp
-  src/pclomp/voxel_grid_covariance_omp.cpp
-  src/pclomp/ndt_omp.cpp
-  src/pclomp/gicp_omp.cpp
-)
-
-add_executable(align
-  apps/align.cpp
-)
-add_dependencies(align
-  ndt_omp
-)
-target_link_libraries(align
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-  ndt_omp
+add_library(ndt_ocl
+  src/pclocl/voxel_grid_covariance_ocl.cpp
+  src/pclocl/ndt_ocl.cpp
 )
 
 #############
@@ -70,48 +57,55 @@ target_link_libraries(align
 
 install(
   TARGETS
-    ndt_omp
+    ndt_ocl
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 
 # install headers
-install(DIRECTORY include/pclomp
+install(DIRECTORY include/pclocl
         DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION})
 else()
 # ROS2
 find_package(ament_cmake_auto REQUIRED)
+find_package(OpenCL REQUIRED)
 ament_auto_find_build_dependencies()
 
 find_package(PCL 1.7 REQUIRED)
-include_directories(${PCL_INCLUDE_DIRS})
-link_directories(${PCL_LIBRARY_DIRS})
-add_definitions(${PCL_DEFINITIONS})
+# include_directories(${PCL_INCLUDE_DIRS})
+# link_directories(${PCL_LIBRARY_DIRS})
+# add_definitions(${PCL_DEFINITIONS})
 
 message(STATUS "PCL_INCLUDE_DIRS:" ${PCL_INCLUDE_DIRS})
 message(STATUS "PCL_LIBRARY_DIRS:" ${PCL_LIBRARY_DIRS})
 message(STATUS "PCL_DEFINITIONS:" ${PCL_DEFINITIONS})
 
+find_package(ament_index_cpp REQUIRED)
 find_package(OpenMP)
 
 ###########
 ## Build ##
 ###########
 
-ament_auto_add_library(ndt_omp SHARED
-  src/pclomp/voxel_grid_covariance_omp.cpp
-  src/pclomp/ndt_omp.cpp
-  src/pclomp/gicp_omp.cpp
+ament_auto_add_library(ndt_ocl SHARED
+  src/pclocl/voxel_grid_covariance_ocl.cpp
+  src/pclocl/ndt_ocl.cpp
+  include/pclocl/voxel_grid_covariance_ocl.h
+  include/pclocl/voxel_grid_covariance_ocl_impl.hpp
+  include/pclocl/ndt_ocl.h
+  include/pclocl/ndt_ocl_impl.hpp
 )
 
-target_link_libraries(ndt_omp ${PCL_LIBRARIES})
+target_link_libraries(ndt_ocl ${PCL_LIBRARIES})
 
 if(OpenMP_CXX_FOUND)
-  target_link_libraries(ndt_omp OpenMP::OpenMP_CXX)
+  target_link_libraries(ndt_ocl OpenMP::OpenMP_CXX)
 else()
   message(WARNING "OpenMP not found")
 endif()
 
 ament_auto_package()
+
+install(DIRECTORY kernel DESTINATION share/${PROJECT_NAME})
 endif()

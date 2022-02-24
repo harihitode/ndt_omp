@@ -1,4 +1,22 @@
 /*
+ * Copyright 2021 Tier IV inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This file includes works by PCL.
+ *
+ * ======== ORIGINAL LICENSE AND COPYRIGHTS BELOW ========
+ *
  * Software License Agreement (BSD License)
  *
  *  Point Cloud Library (PCL) - www.pointclouds.org
@@ -35,8 +53,8 @@
  *
  */
 
-#ifndef PCL_VOXEL_GRID_COVARIANCE_OMP_H_
-#define PCL_VOXEL_GRID_COVARIANCE_OMP_H_
+#ifndef PCL_VOXEL_GRID_COVARIANCE_OCL_H_
+#define PCL_VOXEL_GRID_COVARIANCE_OCL_H_
 
 #include <pcl/pcl_macros.h>
 #include <pcl/filters/boost.h>
@@ -46,7 +64,19 @@
 #include <pcl/point_types.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
-namespace pclomp
+#define CL_USE_DEPRECATED_OPENCL_1_2_APIS
+#define CL_HPP_TARGET_OPENCL_VERSION 210
+#define CL_HPP_ENABLE_EXCEPTIONS
+
+#include <CL/cl2.hpp>
+
+#define MAX_PCL_MAP_NUM (20000)
+#define XAxis 0
+#define YAxis 1
+#define ZAxis 2
+#define MAX_DEPTH 9
+
+namespace pclocl
 {
   /** \brief A searchable voxel structure containing the mean and covariance of the data.
     * \note For more information please see
@@ -192,13 +222,71 @@ namespace pclomp
 
       };
 
+      /** \brief Simple structure to hold 3-D position and id */
+      typedef struct point {
+        float x, y, z;
+        int id;
+      } point;
+
+      /** \brief Simple structure of a kdtree node. */
+      typedef struct tag_kdtree_node {
+        int depth; // level of the node
+        int left_index, right_index; // index of lower nodes than this node
+        float rightmost, leftmost, upmost, downmost, zlowmost, zupmost; // minmax of the lower nodes than this node
+        point location; // axis location of voxel division
+        int axis; // axis of voxel division
+        float axis_val; // value of axis delegate point
+        struct tag_kdtree_node * parent;
+        struct tag_kdtree_node * child1;
+        struct tag_kdtree_node * child2;
+      } kdtree_node;
+
+      // 24 bytes in accelerator
+      typedef struct tag_kdtree_node_petit {
+        uint32_t left_right_index; // min&max indices of points included below this node
+        uint32_t axis; // axis of division
+        float axis_val; // value of division
+        struct tag_kdtree_node_petit * parent;
+        struct tag_kdtree_node_petit * child1;
+        struct tag_kdtree_node_petit * child2;
+      } kdtree_node_petit;
+
       /** \brief Pointer to VoxelGridCovariance leaf structure */
       typedef Leaf* LeafPtr;
 
       /** \brief Const pointer to VoxelGridCovariance leaf structure */
       typedef const Leaf* LeafConstPtr;
 
-    typedef std::map<size_t, Leaf> Map;
+      typedef std::map<size_t, Leaf> Map;
+
+      /** \brief KdTree generated using \ref voxel_centroids_ (used for searching). */
+      kdtree_node_petit * kdtree_root_;
+
+      /** \brief array of points of \ref voxel_centroids_. */
+      point datapoints_[MAX_PCL_MAP_NUM];
+      float map_points_x_[MAX_PCL_MAP_NUM];
+      float map_points_y_[MAX_PCL_MAP_NUM];
+      float map_points_z_[MAX_PCL_MAP_NUM];
+
+      /** \brief array of Mean of voxel covariance matrix. */
+      float map_mean_[MAX_PCL_MAP_NUM][3];
+
+      /** \brief array of Inverse of voxel covariance matrix. */
+      float map_inverse_cov_[MAX_PCL_MAP_NUM][3][3];
+
+      /** \brief KdTree indexes. */
+      int node_indexes_[MAX_PCL_MAP_NUM];
+
+      /** \brief num of points of \ref voxel_centroids_. */
+      size_t num_centroids_;
+
+      /** \brief OpenCL context. */
+      cl_context context_;
+
+      /** \brief OpenCL memory objects. */
+      cl_mem d_map_points_x_, d_map_points_y_, d_map_points_z_;
+      cl_mem d_map_mean_, d_map_inverse_cov_;
+      cl_mem d_node_indexes_;
 
     public:
 
@@ -220,6 +308,23 @@ namespace pclomp
         min_b_.setZero ();
         max_b_.setZero ();
         filter_name_ = "VoxelGridCovariance";
+      }
+
+      /** \brief Finalize.
+       * release OpenCL memory objects.
+       */
+      inline void finalize()
+      {
+        releaseOCLMemoryObjects();
+      }
+
+      inline void setContext(cl_context context)
+      {
+        if (context_ != NULL) {
+          std::cerr << "error : OpenCL context is already set" << std::endl;
+          return;
+        }
+        context_ = context;
       }
 
       /** \brief Set the minimum number of points required for a cell to be used (must be 3 or greater for covariance calculation).
@@ -278,11 +383,7 @@ namespace pclomp
 
         voxel_centroids_ = PointCloudPtr (new PointCloud (output));
 
-        if (searchable_ && voxel_centroids_->size() > 0)
-        {
-          // Initiates kdtree of the centroids of voxels containing a sufficient number of points
-          kdtree_.setInputCloud (voxel_centroids_);
-        }
+        constructKdTree();
       }
 
       /** \brief Initializes voxel structure.
@@ -295,10 +396,137 @@ namespace pclomp
         voxel_centroids_ = PointCloudPtr (new PointCloud);
         applyFilter (*voxel_centroids_);
 
-        if (searchable_ && voxel_centroids_->size() > 0)
+        constructKdTree();
+      }
+
+      /** \brief Construct KdTree from voxel structure.
+       */
+      inline void constructKdTree()
+      {
+        if (!searchable_ || num_centroids_ == 0 || num_centroids_ > MAX_PCL_MAP_NUM) {
+          return;
+        }
+        // Initiates kdtree of the centroids of voxels containing a sufficient number of points
+        for (int i = 0; i < num_centroids_; i++) {
+          datapoints_[i].x = map_points_x_[i] = voxel_centroids_->points[i].x;
+          datapoints_[i].y = map_points_y_[i] = voxel_centroids_->points[i].y;
+          datapoints_[i].z = map_points_z_[i] = voxel_centroids_->points[i].z;
+          datapoints_[i].id = i;
+        }
+        int ret = createOCLMemoryObjects();
+        if (ret != 0) {
+          std::cerr << "error : failed to create OpenCL memory objects" << std::endl;
+          return;
+        }
+        // dump tree
+        unsigned alloc_pointer = 0;
+        if (kdtree(kdtree_root_, NULL, &alloc_pointer, datapoints_, 0, num_centroids_ - 1, 0, node_indexes_) == NULL) {
+          std::cerr << "error : failed to construct kdtree" << std::endl;
+          return;
+        }
         {
-          // Initiates kdtree of the centroids of voxels containing a sufficient number of points
-          kdtree_.setInputCloud (voxel_centroids_);
+          const uint32_t root_address = 0x20120000; // SPM1
+          const uint32_t tree_node_size = 4 + 4 + 4 + (4 * 3);
+          FILE * tree_file = fopen("sample_tree.txt", "w");
+          fprintf(tree_file, "# SPM1 (note; big-endian); %08x\n", root_address);
+          fprintf(tree_file, "# tree size; %08x\n", tree_node_size);
+          fprintf(tree_file, "kdtree_root:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            fprintf(tree_file, "%08x\n", kdtree_root_[i].left_right_index);
+            fprintf(tree_file, "%08x\n", kdtree_root_[i].axis);
+            union f_and_i {
+              uint32_t i;
+              float f;
+            } axis_val;
+            axis_val.f = kdtree_root_[i].axis_val;
+            fprintf(tree_file, "%08x\n", axis_val.i);
+            if (kdtree_root_[i].parent != NULL) {
+              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].parent - kdtree_root_) * tree_node_size);
+            } else {
+              fprintf(tree_file, "%08x\n", 0);
+            }
+            if (kdtree_root_[i].child1 != NULL) {
+              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].child1 - kdtree_root_) * tree_node_size);
+            } else {
+              fprintf(tree_file, "%08x\n", 0);
+            }
+            if (kdtree_root_[i].child2 != NULL) {
+              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].child2 - kdtree_root_) * tree_node_size);
+            } else {
+              fprintf(tree_file, "%08x\n", 0);
+            }
+          }
+          fclose(tree_file);
+        }
+        // dump infos:
+        union f_and_i {
+          uint32_t i;
+          float f;
+        } tmp;
+        {
+          FILE * fp = fopen("map_points_x.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "map_points_x:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            tmp.f = map_points_x_[i];
+            fprintf(fp, "%08x\n", tmp.i);
+          }
+          fclose(fp);
+        }
+        {
+          FILE * fp = fopen("map_points_y.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "map_points_y:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            tmp.f = map_points_y_[i];
+            fprintf(fp, "%08x\n", tmp.i);
+          }
+          fclose(fp);
+        }
+        {
+          FILE * fp = fopen("map_points_z.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "map_points_z:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            tmp.f = map_points_z_[i];
+            fprintf(fp, "%08x\n", tmp.i);
+          }
+          fclose(fp);
+        }
+        {
+          FILE * fp = fopen("map_mean.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "map_mean:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            for (int j = 0; j < 3; j++) {
+              tmp.f = map_mean_[i][j];
+              fprintf(fp, "%08x\n", tmp.i);
+            }
+          }
+          fclose(fp);
+        }
+        {
+          FILE * fp = fopen("map_inverse_cov.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "map_inverse_cov:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            for (int j = 0; j < 3; j++) {
+              for (int k = 0; k < 3; k++) {
+                tmp.f = map_inverse_cov_[i][j][k];
+                fprintf(fp, "%08x\n", tmp.i);
+              }
+            }
+          }
+          fclose(fp);
+        }
+        {
+          FILE * fp = fopen("node_indices.txt", "w");
+          fprintf(fp, "# big endian\n");
+          fprintf(fp, "node_indices:\n");
+          for (int i = 0; i < num_centroids_; i++) {
+            fprintf(fp, "%08x\n", node_indexes_[i]);
+          }
+          fclose(fp);
         }
       }
 
@@ -423,26 +651,27 @@ namespace pclomp
       nearestKSearch (const PointT &point, int k,
                       std::vector<LeafConstPtr> &k_leaves, std::vector<float> &k_sqr_distances)
       {
-        k_leaves.clear ();
+        // k_leaves.clear ();
 
-        // Check if kdtree has been built
-        if (!searchable_)
-        {
-          PCL_WARN ("%s: Not Searchable", this->getClassName ().c_str ());
-          return 0;
-        }
+        // // Check if kdtree has been built
+        // if (!searchable_)
+        // {
+        //   PCL_WARN ("%s: Not Searchable", this->getClassName ().c_str ());
+        //   return 0;
+        // }
 
-        // Find k-nearest neighbors in the occupied voxel centroid cloud
-        std::vector<int> k_indices;
-        k = kdtree_.nearestKSearch (point, k, k_indices, k_sqr_distances);
+        // // Find k-nearest neighbors in the occupied voxel centroid cloud
+        // std::vector<int> k_indices;
+        // k = kdtree_.nearestKSearch (point, k, k_indices, k_sqr_distances);
 
-        // Find leaves corresponding to neighbors
-        k_leaves.reserve (k);
-        for (std::vector<int>::iterator iter = k_indices.begin (); iter != k_indices.end (); iter++)
-        {
-          k_leaves.push_back (&leaves_[voxel_centroids_leaf_indices_[*iter]]);
-        }
-        return k;
+        // // Find leaves corresponding to neighbors
+        // k_leaves.reserve (k);
+        // for (std::vector<int>::iterator iter = k_indices.begin (); iter != k_indices.end (); iter++)
+        // {
+        //   k_leaves.push_back (&leaves_[voxel_centroids_leaf_indices_[*iter]]);
+        // }
+        // return k;
+        return 0;
       }
 
       /** \brief Search for the k-nearest occupied voxels for the given query point.
@@ -477,31 +706,32 @@ namespace pclomp
       radiusSearch (const PointT &point, double radius, std::vector<LeafConstPtr> &k_leaves,
                     std::vector<float> &k_sqr_distances, unsigned int max_nn = 0) const
       {
-        k_leaves.clear ();
+      //   k_leaves.clear ();
 
-        // Check if kdtree has been built
-        if (!searchable_)
-        {
-          PCL_WARN ("%s: Not Searchable", this->getClassName ().c_str ());
-          return 0;
-        }
+      //   // Check if kdtree has been built
+      //   if (!searchable_)
+      //   {
+      //     PCL_WARN ("%s: Not Searchable", this->getClassName ().c_str ());
+      //     return 0;
+      //   }
 
-        // Find neighbors within radius in the occupied voxel centroid cloud
-        std::vector<int> k_indices;
-        int k = kdtree_.radiusSearch (point, radius, k_indices, k_sqr_distances, max_nn);
+      //   // Find neighbors within radius in the occupied voxel centroid cloud
+      //   std::vector<int> k_indices;
+      //   int k = kdtree_.radiusSearch (point, radius, k_indices, k_sqr_distances, max_nn);
 
-        // Find leaves corresponding to neighbors
-        k_leaves.reserve (k);
-        for (std::vector<int>::iterator iter = k_indices.begin (); iter != k_indices.end (); iter++)
-        {
-		  auto leaf = leaves_.find(voxel_centroids_leaf_indices_[*iter]);
-		  if (leaf == leaves_.end()) {
-			  std::cerr << "error : could not find the leaf corresponding to the voxel" << std::endl;
-			  std::cin.ignore(1);
-		  }
-          k_leaves.push_back (&(leaf->second));
-        }
-        return k;
+      //   // Find leaves corresponding to neighbors
+      //   k_leaves.reserve (k);
+      //   for (std::vector<int>::iterator iter = k_indices.begin (); iter != k_indices.end (); iter++)
+      //   {
+		  // auto leaf = leaves_.find(voxel_centroids_leaf_indices_[*iter]);
+		  // if (leaf == leaves_.end()) {
+			//   std::cerr << "error : could not find the leaf corresponding to the voxel" << std::endl;
+			//   std::cin.ignore(1);
+		  // }
+      //     k_leaves.push_back (&(leaf->second));
+      //   }
+      //   return k;
+        return 0;
       }
 
       /** \brief Search for all the nearest occupied voxels of the query point in a given radius.
@@ -530,6 +760,65 @@ namespace pclomp
        * \param[out] output cloud containing centroids of voxels containing a sufficient number of points
        */
       void applyFilter (PointCloud &output);
+
+      /** \brief Construct KdTree recursively.
+       * \param[out] root_node pointer of root node.
+       * \param[in] parent_node pointer of parent node.
+       * \param[in] alloc_pointer index of node to be allocated.
+       * \param[in] pointlist points of nodes.
+       * \param[in] left left index of nodes.
+       * \param[in] right right index of nodes.
+       * \param[in] depth depth of the node.
+       * \param[out] node_indexes indexes of nodes.
+       */
+      kdtree_node_petit * kdtree (kdtree_node_petit * root_node,
+                                  kdtree_node_petit * parent_node,
+                                  unsigned * alloc_pointer, point * pointlist,
+                                  int left, int right, unsigned depth, int * node_indexes);
+
+      /** \brief Create OpenCL memory objects.
+       * \return error code of creation.
+       */
+      int createOCLMemoryObjects();
+
+      /** \brief release OpenCL memory objects.
+       */
+      void releaseOCLMemoryObjects();
+
+      /** \brief Return whether a > 0 or not.
+       * \param[in] a target value.
+       * \return positive value if a > 0, negative value if not.
+       */
+      static int sign (float a) {
+        return (a > 0) - (a < 0);
+      }
+
+      /** \brief Return whether a.x > b.x or not.
+       * \param[in] a target point.
+       * \param[in] b target point.
+       * \return positive value if a.x > b.x, negative value if not.
+       */
+      static int comparex (const void * a, const void * b) {
+        return sign(((point *)a)->x - ((point *)b)->x);
+      }
+
+      /** \brief Return whether a.y > b.y or not.
+       * \param[in] a target point.
+       * \param[in] b target point.
+       * \return positive value if a.y > b.y, negative value if not.
+       */
+      static int comparey (const void * a, const void * b) {
+        return sign(((point *)a)->y - ((point *)b)->y);
+      }
+
+      /** \brief Return whether a.z > b.z or not.
+       * \param[in] a target point.
+       * \param[in] b target point.
+       * \return positive value if a.z > b.z, negative value if not.
+       */
+      static int comparez (const void * a, const void * b) {
+        return sign(((point *)a)->z - ((point *)b)->z);
+      }
 
       /** \brief Flag to determine if voxel structure is searchable. */
       bool searchable_;

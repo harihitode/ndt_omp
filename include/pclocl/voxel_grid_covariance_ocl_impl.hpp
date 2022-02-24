@@ -1,4 +1,22 @@
 /*
+ * Copyright 2021 Tier IV inc. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * This file includes works by PCL.
+ *
+ * ======== ORIGINAL LICENSE AND COPYRIGHTS BELOW ========
+ *
  * Software License Agreement (BSD License)
  *
  *  Point Cloud Library (PCL) - www.pointclouds.org
@@ -35,18 +53,42 @@
  *
  */
 
-#ifndef PCL_VOXEL_GRID_COVARIANCE_IMPL_OMP_H_
-#define PCL_VOXEL_GRID_COVARIANCE_IMPL_OMP_H_
+#ifndef PCL_VOXEL_GRID_COVARIANCE_IMPL_OCL_H_
+#define PCL_VOXEL_GRID_COVARIANCE_IMPL_OCL_H_
 
 #include <pcl/common/common.h>
 #include <pcl/filters/boost.h>
-#include "voxel_grid_covariance_omp.h"
+#include "voxel_grid_covariance_ocl.h"
 #include <Eigen/Dense>
 #include <Eigen/Cholesky>
 
+#define OCL_CREATE_BUFFER_CHECK(ret_mem, context, flags, size, host_ptr, errcode_ret) \
+  ret_mem = clCreateBuffer(context, flags, size, host_ptr, &errcode_ret); \
+if (errcode_ret != CL_SUCCESS) { \
+  return -1; \
+ }
+
+#define OCL_ALLOC_SVM_CHECK(ret_mem, mem_type, context, flags, size, alignment) \
+  ret_mem = static_cast<mem_type>(clSVMAlloc(context, flags, size, alignment)); \
+  if (ret_mem == NULL) {                                                \
+    return -1;                                                          \
+  }
+
+#define OCL_RELEASE_MEMORY_CHECK(mem)           \
+  if (mem != NULL) {                            \
+    clReleaseMemObject(mem);                    \
+    mem = NULL;                                 \
+  }
+
+#define OCL_FREE_SVM_CHECK(context, svm_pointer)  \
+  if (svm_pointer != NULL) {                      \
+    clSVMFree(context, svm_pointer);              \
+    svm_pointer = NULL;                           \
+  }
+
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> void
-pclomp::VoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
+pclocl::VoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
 {
   voxel_centroids_leaf_indices_.clear ();
 
@@ -371,7 +413,7 @@ pclomp::VoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
 
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> int
-pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const Eigen::MatrixXi& relative_coordinates, const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
+pclocl::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const Eigen::MatrixXi& relative_coordinates, const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
 {
 	neighbors.clear();
 
@@ -405,7 +447,7 @@ pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const Eigen::MatrixX
 
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> int
-pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
+pclocl::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
 {
 	neighbors.clear();
 
@@ -416,7 +458,7 @@ pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint(const PointT& refere
 
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> int
-pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint7(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
+pclocl::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint7(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
 {
 	neighbors.clear();
 
@@ -435,7 +477,7 @@ pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint7(const PointT& refer
 
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> int
-pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint1(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
+pclocl::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint1(const PointT& reference_point, std::vector<LeafConstPtr> &neighbors) const
 {
 	neighbors.clear();
 	return getNeighborhoodAtPoint(Eigen::MatrixXi::Zero(3,1), reference_point, neighbors);
@@ -445,7 +487,7 @@ pclomp::VoxelGridCovariance<PointT>::getNeighborhoodAtPoint1(const PointT& refer
 
 //////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointT> void
-pclomp::VoxelGridCovariance<PointT>::getDisplayCloud (pcl::PointCloud<pcl::PointXYZ>& cell_cloud)
+pclocl::VoxelGridCovariance<PointT>::getDisplayCloud (pcl::PointCloud<pcl::PointXYZ>& cell_cloud)
 {
   cell_cloud.clear ();
 
@@ -482,6 +524,246 @@ pclomp::VoxelGridCovariance<PointT>::getDisplayCloud (pcl::PointCloud<pcl::Point
   }
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointT>
+typename pclocl::VoxelGridCovariance<PointT>::kdtree_node_petit * pclocl::VoxelGridCovariance<PointT>::kdtree(
+                                                                                                                kdtree_node_petit * root_node, kdtree_node_petit * parent_node, unsigned * alloc_pointer,
+                                                                                                                point * pointlist, int left, int right, unsigned depth,
+                                                                                                                int * node_indexes)
+{
+  point new_location;
+  if (right < 0) {
+    // not allocate
+    return NULL;
+  }
+  // allocate
+  kdtree_node_petit * new_node = &root_node[*alloc_pointer];
+  *alloc_pointer = *alloc_pointer + 1; // count up
+
+  // set parent
+  new_node->parent = parent_node;
+
+  // index list included in this node
+  int new_left_index = left;
+  int new_right_index = left + right + 1;
+  new_node->left_right_index = ((new_left_index & 0x0000FFFF) << 16) | (new_right_index & 0x0000FFFF);
+  // tree's depth
+  // new_node->depth = depth;
+  int median = right / 2;
+
+  if (right == 0 || depth > MAX_DEPTH) {
+    // new_node is leaf
+    // new_node->location = pointlist[median];
+    new_location = pointlist[median];
+    // no child node
+    new_node->child1 = NULL;
+    new_node->child2 = NULL;
+
+    qsort(pointlist, right + 1, sizeof(point), comparex);
+    // new_node->leftmost = pointlist[0].x;
+    // new_node->rightmost = pointlist[right].x;
+
+    qsort(pointlist, right + 1, sizeof(point), comparey);
+    // new_node->downmost = pointlist[0].y;
+    // new_node->upmost = pointlist[right].y;
+
+    qsort(pointlist, right + 1, sizeof(point), comparez);
+    // new_node->zlowmost = pointlist[0].z;
+    // new_node->zupmost = pointlist[right].z;
+
+    for (int i = 0; i < right + 1; i++) {
+      node_indexes[new_left_index + i] = pointlist[i].id;
+    }
+
+    return new_node;
+  }
+
+  // change the dividing dirction
+  new_node->axis = depth % 3;
+
+  // sorting by space (1 direction) for binary division
+  if (new_node->axis == XAxis) {
+    // ascending sorting by point.x
+    qsort(pointlist, right + 1, sizeof(point), comparex);
+    // new_node->leftmost = pointlist[0].x;
+    // new_node->rightmost = pointlist[right].x;
+  } else if (new_node->axis == YAxis) {
+    // by point.y
+    qsort(pointlist, right + 1, sizeof(point), comparey);
+    // new_node->downmost = pointlist[0].y;
+    // new_node->upmost = pointlist[right].y;
+  } else if (new_node->axis == ZAxis) {
+    // by point.z
+    qsort(pointlist, right + 1, sizeof(point), comparez);
+    // new_node->zlowmost = pointlist[0].z;
+    // new_node->zupmost = pointlist[right].z;
+  }
+
+
+  node_indexes[new_left_index + median] = pointlist[median].id;
+  // printf("node->left_index+median: %d\n", new_node->left_index+median);
+  // new_node->location = pointlist[median];
+  new_location = pointlist[median];
+  new_node->child2 = kdtree(root_node, new_node, alloc_pointer,
+                            pointlist + median + 1,
+                            /*left  =*/ left + median + 1,
+                            /*right =*/ right - (median + 1),
+                            /*depth =*/ depth + 1, node_indexes);
+
+  new_node->child1 = kdtree(root_node, new_node, alloc_pointer,
+                            pointlist,
+                            /*left  =*/ left,
+                            /*right =*/ median - 1,
+                            /*depth =*/ depth + 1, node_indexes);
+
+  // calculate bounding box
+  switch (new_node->axis) {
+  case XAxis:
+    new_node->axis_val = new_location.x;
+    // if (new_node->child2 != NULL && new_node->child1 != NULL) {
+    //   new_node->upmost = std::max(new_node->child2->upmost,
+    //                               new_node->child1->upmost);
+    //   new_node->downmost = std::min(new_node->child2->downmost,
+    //                                 new_node->child1->downmost);
+    //   new_node->zupmost = std::max(new_node->child2->zupmost,
+    //                                new_node->child1->zupmost);
+    //   new_node->zlowmost = std::min(new_node->child2->zlowmost,
+    //                                 new_node->child1->zlowmost);
+    // } else if (new_node->child2 != NULL) {
+    //   new_node->upmost = new_node->child2->upmost;
+    //   new_node->downmost = new_node->child2->downmost;
+    //   new_node->zupmost = new_node->child2->zupmost;
+    //   new_node->zlowmost = new_node->child2->zlowmost;
+    // } else if (new_node->child1 != NULL) {
+    //   new_node->upmost = new_node->child1->upmost;
+    //   new_node->downmost = new_node->child1->downmost;
+    //   new_node->zupmost = new_node->child1->zupmost;
+    //   new_node->zlowmost = new_node->child1->zlowmost;
+    // } else {
+    //   new_node->upmost = new_node->location.y;
+    //   new_node->downmost = new_node->location.y;
+    //   new_node->zupmost = new_node->location.z;
+    //   new_node->zlowmost =  new_node->location.z;
+    // }
+    break;
+  case YAxis:
+    new_node->axis_val = new_location.y;
+    // if (new_node->child2 != NULL && new_node->child1 != NULL) {
+    //   new_node->rightmost = std::max(new_node->child2->rightmost,
+    //                                  new_node->child1->rightmost);
+    //   new_node->leftmost = std::min(new_node->child2->leftmost,
+    //                                 new_node->child1->leftmost);
+    //   new_node->zupmost = std::max(new_node->child2->zupmost,
+    //                                new_node->child1->zupmost);
+    //   new_node->zlowmost = std::min(new_node->child2->zlowmost,
+    //                                 new_node->child1->zlowmost);
+    // } else if (new_node->child2 != NULL) {
+    //   new_node->rightmost = new_node->child2->rightmost;
+    //   new_node->leftmost = new_node->child2->leftmost;
+    //   new_node->zupmost = new_node->child2->zupmost;
+    //   new_node->zlowmost = new_node->child2->zlowmost;
+    // } else if (new_node->child1 != NULL) {
+    //   new_node->rightmost = new_node->child1->rightmost;
+    //   new_node->leftmost = new_node->child1->leftmost;
+    //   new_node->zupmost = new_node->child1->zupmost;
+    //   new_node->zlowmost = new_node->child1->zlowmost;
+    // } else {
+    //   new_node->rightmost = new_node->location.x;
+    //   new_node->leftmost = new_node->location.x;
+    //   new_node->zupmost = new_node->location.z;
+    //   new_node->zlowmost = new_node->location.z;
+    // }
+    break;
+  case ZAxis:
+  default:
+    new_node->axis_val = new_location.z;
+    // if (new_node->child2 != NULL && new_node->child1 != NULL) {
+    //   new_node->rightmost = std::max(new_node->child2->rightmost,
+    //                                  new_node->child1->rightmost);
+    //   new_node->leftmost = std::min(new_node->child2->leftmost,
+    //                                 new_node->child1->leftmost);
+    //   new_node->upmost = std::max(new_node->child2->upmost,
+    //                               new_node->child1->upmost);
+    //   new_node->downmost = std::min(new_node->child2->downmost,
+    //                                 new_node->child1->downmost);
+    // } else if (new_node->child2 != NULL) {
+    //   new_node->rightmost = new_node->child2->rightmost;
+    //   new_node->leftmost = new_node->child2->leftmost;
+    //   new_node->upmost = new_node->child2->upmost;
+    //   new_node->downmost = new_node->child2->downmost;
+    // } else if (new_node->child1 != NULL) {
+    //   new_node->rightmost = new_node->child1->rightmost;
+    //   new_node->leftmost = new_node->child1->leftmost;
+    //   new_node->upmost = new_node->child1->upmost;
+    //   new_node->downmost = new_node->child1->downmost;
+    // } else {
+    //   new_node->rightmost = new_node->location.x;
+    //   new_node->leftmost = new_node->location.x;
+    //   new_node->upmost = new_node->location.y;
+    //   new_node->downmost = new_node->location.y;
+    // }
+    break;
+  }
+  return new_node;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointT>
+int pclocl::VoxelGridCovariance<PointT>::createOCLMemoryObjects()
+{
+  size_t map_points_size, kdtree_size, map_indexes_size, map_mean_size, map_inverse_cov_size;
+  cl_uint num_platforms, num_devices;
+  cl_int ret;
+
+  if (num_centroids_ > MAX_PCL_MAP_NUM) {
+    return -1;
+  }
+
+  // memory object
+  map_points_size = num_centroids_ * sizeof(float);
+  map_indexes_size = num_centroids_ * sizeof(int);
+  map_inverse_cov_size = num_centroids_ * 3 * 3 * sizeof(float);
+  map_mean_size = num_centroids_ * 3 * sizeof(float);
+  kdtree_size = num_centroids_ * sizeof(kdtree_node_petit);
+  // should be have:
+  // parent[pointer], child1[pointer], child2[pointer]: 12 bytes
+  // left_index, right_index: (2^16 - 2^16): 4 bytes
+  // axis_val: 4 bytes
+  // axis: 4 bytes
+  // total 24 bytes
+  size_t kdtree_size_least = num_centroids_ * 24;
+  printf("MAP_INFO: #VOXELS %lu\n", num_centroids_);
+  printf("MAP_INFO: map_tree_size %lu [bytes]\n", kdtree_size_least);
+  printf("MAP_INFO: map_points_size (x, y, z): %lu [bytes]\n", map_points_size * 3);
+  printf("MAP_INFO: map_mean_size: %lu [bytes]\n", map_mean_size);
+  printf("MAP_INFO: map_inverse_cov_size: %lu [bytes]\n", map_inverse_cov_size);
+  printf("MAP_INFO: map_indexes_size: %lu [bytes]\n", map_indexes_size);
+  printf("MAP_INFO: TOTAL memory: %lu [bytes]\n", kdtree_size_least + map_points_size * 3 + map_mean_size + map_inverse_cov_size + map_indexes_size);
+
+  OCL_CREATE_BUFFER_CHECK(d_map_points_x_, context_, CL_MEM_READ_WRITE, map_points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_map_points_y_, context_, CL_MEM_READ_WRITE, map_points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_map_points_z_, context_, CL_MEM_READ_WRITE, map_points_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_map_mean_, context_, CL_MEM_READ_WRITE, map_mean_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_map_inverse_cov_, context_, CL_MEM_READ_WRITE, map_inverse_cov_size, NULL, ret);
+  OCL_CREATE_BUFFER_CHECK(d_node_indexes_, context_, CL_MEM_READ_WRITE, map_indexes_size, NULL, ret);
+  // allocation of shared virtual memory
+  OCL_ALLOC_SVM_CHECK(kdtree_root_, kdtree_node_petit*, context_, CL_MEM_READ_WRITE, kdtree_size, 0);
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+template <typename PointT>
+void pclocl::VoxelGridCovariance<PointT>::releaseOCLMemoryObjects()
+{
+  OCL_RELEASE_MEMORY_CHECK(d_map_points_x_);
+  OCL_RELEASE_MEMORY_CHECK(d_map_points_y_);
+  OCL_RELEASE_MEMORY_CHECK(d_map_points_z_);
+  OCL_RELEASE_MEMORY_CHECK(d_node_indexes_);
+  OCL_RELEASE_MEMORY_CHECK(d_map_mean_);
+  OCL_RELEASE_MEMORY_CHECK(d_map_inverse_cov_);
+  OCL_FREE_SVM_CHECK(context_, kdtree_root_);
+}
+
 #define PCL_INSTANTIATE_VoxelGridCovariance(T) template class PCL_EXPORTS pcl::VoxelGridCovariance<T>;
 
-#endif    // PCL_VOXEL_GRID_COVARIANCE_IMPL_H_
+#endif
