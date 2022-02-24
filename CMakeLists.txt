@@ -2,8 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(ndt_ocl)
 
 add_definitions(-std=c++14)
-#set(CMAKE_CXX_FLAGS "-std=c++14 -MM -E")
-#add_compile_options(-march=native)
+add_compile_options(-march=native)
 
 # pcl 1.7 causes a segfault when it is built with debug mode
 set(CMAKE_BUILD_TYPE "RELEASE")
