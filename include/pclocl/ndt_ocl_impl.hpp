@@ -143,6 +143,9 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::NormalDistributi
 
   search_method = KDTREE; // only KDTREE allowed in OCL
   num_threads_ = omp_get_max_threads();
+  limit_ = LIMIT_NUM;
+  computeTransformationCall_ = 0;
+  computeDerivativesCLCall_ = 0;
 
   Queue_ = NULL;
   k_compute_derivatives_ = NULL;
@@ -336,10 +339,10 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
   int ret;
   ret = createOCLMemoryObjects();
   if (ret != 0) {
-    std::cerr << "error : failed to create OpenCL memory objects" << std::endl;
+    std::cerr << "error : failed to create OpenCL memory objects " << ret << std::endl;
   }
   else {
-	  ret =copyToOCLMemoryObjects();
+    ret = copyToOCLMemoryObjects();
   }
   if (ret != 0) {
     std::cerr << "error : failed to copy to OpenCL memory objects" << std::endl;
@@ -628,8 +631,10 @@ template <typename PointSource, typename PointTarget>
 int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::createOCLMemoryObjects(void)
 {
   if (n_query_ > MAX_PCL_INPUT_NUM) {
+    std::cerr << n_query_ << " exceeds MAX " << MAX_PCL_INPUT_NUM << std::endl;
     return -1;
   }
+  std::cerr << "success to create: " << n_query_ << std::endl;
 
   size_t source_size, ret_size, points_size, map_points_size;
   const size_t j_ang_size = 8 * 4 * sizeof(float);
@@ -755,6 +760,7 @@ int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDeriv
   ret = clEnqueueNDRangeKernel(Queue_, k_compute_derivatives_, 1, NULL, &global_item_size, &local_item_size, 0, NULL, NULL);
   if (CL_SUCCESS != ret) {
     std::cerr << "error : clEnqueueNDRangeKernel error code " << ret << std::endl;
+    std::cerr << "local_item_size: " << local_item_size << ", global_item_size: " << global_item_size << std::endl;
     return -1;
   }
   return 0;
