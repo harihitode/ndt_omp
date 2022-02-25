@@ -380,9 +380,9 @@ namespace pclocl
       {
         searchable_ = searchable;
         applyFilter (output);
-
         voxel_centroids_ = PointCloudPtr (new PointCloud (output));
 
+        num_centroids_ = voxel_centroids_->size();
         constructKdTree();
       }
 
@@ -396,6 +396,7 @@ namespace pclocl
         voxel_centroids_ = PointCloudPtr (new PointCloud);
         applyFilter (*voxel_centroids_);
 
+        num_centroids_ = voxel_centroids_->size();
         constructKdTree();
       }
 
