@@ -194,6 +194,8 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
   gauss_d1_ = -log ( gauss_c1 + gauss_c2 ) - gauss_d3_;
   gauss_d2_ = -2 * log ((-log ( gauss_c1 * exp ( -0.5 ) + gauss_c2 ) - gauss_d3_) / gauss_d1_);
 
+  std::cerr << "computeTransformation Start" << std::endl;
+
   if (guess != Eigen::Matrix4f::Identity ())
   {
     // Initialise final transformation to the guessed one
@@ -252,6 +254,7 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
       }
 
       converged_ = delta_p_norm == delta_p_norm;
+      std::cerr << "delta_p_norm: " << delta_p_norm << std::endl;
       return;
     }
 
@@ -276,6 +279,7 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
     if (nr_iterations_ > max_iterations_ ||
         (nr_iterations_ && (std::fabs (delta_p_norm) < transformation_epsilon_)))
     {
+      std::cerr << "Iteration: " << nr_iterations_ << " converged." << std::endl;
       converged_ = true;
     }
 
@@ -328,6 +332,12 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
     std::cerr << "error : query points is too large." << std::endl;
     return -1.0;
   }
+
+  if (input_->points.size() > MAX_PCL_INPUT_NUM) {
+    std::cerr << "error : input points is too large." << std::endl;
+    return -1.0;
+  }
+
   for (int i = 0; i < n_query_; i++) {
     scores_[i] = 0.0f;
     for (int j = 0; j < 6; j++) {
@@ -352,6 +362,7 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
     std::cerr << "error : input_ points is too large." << std::endl;
     return -1.0;
   }
+
   for (int i = 0; i < input_->points.size(); i++) {
     input_points_x_[i] = input_->points[i].x;
     input_points_y_[i] = input_->points[i].y;
@@ -386,12 +397,17 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
   else {
     ret = readOCLMemoryObjects();
   }
+  if (ret != 0) {
+    std::cerr << "error : failed to read OpenCL memory objects" << std::endl;
+  }
   // dump
   union f_and_i {
     uint32_t i;
     float f;
   } tmp;
-  if (computeTransformationCall_ == 170 && computeDerivativesCLCall_ == 1) {\
+  if (computeTransformationCall_ == 0 && computeDerivativesCLCall_ == 0) {
+    computeTransformationCall_++;
+    computeDerivativesCLCall_++;
     {
       FILE * fp = fopen("scores.txt", "w");
       fprintf(fp, "# bin endian\n");
@@ -538,12 +554,12 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
       fclose(fp);
     }
   }
-  if (ret != 0) {
-    std::cerr << "error : failed to read OpenCL memory objects" << std::endl;
-  }
   releaseOCLMemoryObjects();
 
   for (int i = 0; i < n_query_; i++) {
+    if (i == 0) {
+      std::cerr << "score_[0]: " << scores_[0] << std::endl;
+    }
     score += scores_[i];
     for (int j = 0; j < 6; j++) {
       for (int k = 0; k < 1; k++) {
@@ -557,7 +573,14 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
     }
   }
 
-	return (score);
+  int num_neighborhood = 0;
+  for (int i = 0; i < limit_ * n_query_; i++) {
+    if (neighbor_candidate_indexes_[i] != -1) {
+      num_neighborhood++;
+    }
+  }
+  std::cerr << "Iteration: " << nr_iterations_ << ", Score: " << score << ", Neighbers: " << num_neighborhood << std::endl;
+  return (score);
 //   double sum_score_pt = 0;
 //   double nearest_voxel_score_pt = 0;
 //   Eigen::Matrix<double, 6, 1> score_gradient_pt = Eigen::Matrix<double, 6, 1>::Zero();
@@ -627,7 +650,6 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
 //  else {
 //    nearest_voxel_transformation_likelihood_ = 0.0;
 //  }
-
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -734,7 +756,6 @@ int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::createOCLMem
     std::cerr << n_query_ << " exceeds MAX " << MAX_PCL_INPUT_NUM << std::endl;
     return -1;
   }
-  std::cerr << "success to create: " << n_query_ << std::endl;
 
   size_t source_size, ret_size, points_size, map_points_size;
   const size_t j_ang_size = 8 * 4 * sizeof(float);
@@ -824,7 +845,7 @@ int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDeriv
   const size_t local_item_size = 256;
   size_t global_item_size;
   cl_int ret;
-  computeDerivativesCLCall_++;
+  // computeDerivativesCLCall_++;
   // set arguments
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 0, sizeof(cl_mem), (void *)&d_query_x_); // ok (lidar)
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 1, sizeof(cl_mem), (void *)&d_query_y_); // ok (lidar)
@@ -871,10 +892,15 @@ template <typename PointSource, typename PointTarget>
 int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::readOCLMemoryObjects()
 {
   OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidates_, CL_TRUE, 0, neighbor_candidates_size_int_, neighbor_candidate_indexes_, 0, NULL, NULL);
+  std::cerr << "neighbor_candidate read: " << neighbor_candidates_size_int_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidate_dists_, CL_TRUE, 0, neighbor_candidates_size_float_, neighbor_candidate_dists_, 0, NULL, NULL);
+  std::cerr << "neighbor_candidates_dist read: " << neighbor_candidates_size_float_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_scores_, CL_TRUE, 0, score_size_, scores_, 0, NULL, NULL);
+  std::cerr << "scores read: " << score_size_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_score_gradients_, CL_TRUE, 0, score_gradients_size_, score_gradients_, 0, NULL, NULL);
+  std::cerr << "score_gradients read: " << score_gradients_size_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_hessians_, CL_TRUE, 0, hessians_size_, hessians_, 0, NULL, NULL);
+  std::cerr << "hessians_size read: " << hessians_size_ << std::endl;
   return 0;
 }
 
@@ -1193,21 +1219,7 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeHessian (
     // Find neighbors (Radius search has been experimentally faster than direct neighbor checking.
     std::vector<TargetGridLeafConstPtr> neighborhood;
     std::vector<float> distances;
-		switch (search_method) {
-		case KDTREE:
-			target_cells_.radiusSearch(x_trans_pt, resolution_, neighborhood, distances);
-			break;
-		case DIRECT26:
-			target_cells_.getNeighborhoodAtPoint(x_trans_pt, neighborhood);
-			break;
-		default:
-		case DIRECT7:
-			target_cells_.getNeighborhoodAtPoint7(x_trans_pt, neighborhood);
-			break;
-		case DIRECT1:
-			target_cells_.getNeighborhoodAtPoint1(x_trans_pt, neighborhood);
-			break;
-		}
+    target_cells_.radiusSearch(x_trans_pt, resolution_, neighborhood, distances);
 
     for (typename std::vector<TargetGridLeafConstPtr>::iterator neighborhood_it = neighborhood.begin (); neighborhood_it != neighborhood.end (); neighborhood_it++)
     {
