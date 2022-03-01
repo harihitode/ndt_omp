@@ -321,7 +321,7 @@ pclocl::VoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
   // Eigen values less than a threshold of max eigen value are inflated to a set fraction of the max eigen value.
   double min_covar_eigvalue;
 
-  for (auto it = leaves_.begin (); it != leaves_.end (); ++it)
+  for (auto it = leaves_.begin (), index = 0; it != leaves_.end (); ++it)
   {
 
     // Normalize the centroid
@@ -404,7 +404,15 @@ pclocl::VoxelGridCovariance<PointT>::applyFilter (PointCloud &output)
       {
         leaf.nr_points = -1;
       }
-
+      for (int i = 0; i < 3; i++) {
+        map_mean_[index][i] = leaf.mean_(i);
+      }
+      for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+          map_inverse_cov_[index][i][j] = leaf.icov_(i, j);
+        }
+      }
+      ++index;
     }
   }
 
