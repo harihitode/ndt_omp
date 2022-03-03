@@ -733,6 +733,7 @@ int pclocl::VoxelGridCovariance<PointT>::createOCLMemoryObjects()
   map_inverse_cov_size = num_centroids_ * 3 * 3 * sizeof(float);
   map_mean_size = num_centroids_ * 3 * sizeof(float);
   kdtree_size = num_centroids_ * sizeof(kdtree_node_petit);
+  kdtree_size_ = kdtree_size;
   // should be have:
   // parent[pointer], child1[pointer], child2[pointer]: 12 bytes
   // left_index, right_index: (2^16 - 2^16): 4 bytes
@@ -755,7 +756,9 @@ int pclocl::VoxelGridCovariance<PointT>::createOCLMemoryObjects()
   OCL_CREATE_BUFFER_CHECK(d_map_inverse_cov_, context_, CL_MEM_READ_WRITE, map_inverse_cov_size, NULL, ret);
   OCL_CREATE_BUFFER_CHECK(d_node_indexes_, context_, CL_MEM_READ_WRITE, map_indexes_size, NULL, ret);
   // allocation of shared virtual memory
-  OCL_ALLOC_SVM_CHECK(kdtree_root_, kdtree_node_petit*, context_, CL_MEM_READ_WRITE, kdtree_size, 0);
+  // OCL_ALLOC_SVM_CHECK(kdtree_root_, kdtree_node_petit*, context_, CL_MEM_READ_WRITE, kdtree_size, 0);
+  OCL_CREATE_BUFFER_CHECK(d_kdtree_root_, context_, CL_MEM_READ_WRITE, kdtree_size, NULL, ret);
+  kdtree_root_ = (decltype(kdtree_root_))calloc(num_centroids_, sizeof(kdtree_node_petit));
   return 0;
 }
 
@@ -769,7 +772,9 @@ void pclocl::VoxelGridCovariance<PointT>::releaseOCLMemoryObjects()
   OCL_RELEASE_MEMORY_CHECK(d_node_indexes_);
   OCL_RELEASE_MEMORY_CHECK(d_map_mean_);
   OCL_RELEASE_MEMORY_CHECK(d_map_inverse_cov_);
-  OCL_FREE_SVM_CHECK(context_, kdtree_root_);
+  OCL_RELEASE_MEMORY_CHECK(d_kdtree_root_);
+  // OCL_FREE_SVM_CHECK(context_, kdtree_root_);
+  free(kdtree_root_);
 }
 
 #define PCL_INSTANTIATE_VoxelGridCovariance(T) template class PCL_EXPORTS pcl::VoxelGridCovariance<T>;

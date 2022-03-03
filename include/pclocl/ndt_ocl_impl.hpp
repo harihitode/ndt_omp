@@ -405,9 +405,7 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
     uint32_t i;
     float f;
   } tmp;
-  if (computeTransformationCall_ == 0 && computeDerivativesCLCall_ == 0) {
-    computeTransformationCall_++;
-    computeDerivativesCLCall_++;
+  if (computeTransformationCall_++ == 10) {
     {
       FILE * fp = fopen("scores.txt", "w");
       fprintf(fp, "# bin endian\n");
@@ -499,11 +497,11 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
       fprintf(fpz, "query_points_z:\n");
       for (int i = 0; i < n_query_; i++) {
         tmp.f = query_points_x_[i];
-        fprintf(fpx, "%08x\n", tmp.i);
+        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
         tmp.f = query_points_y_[i];
-        fprintf(fpy, "%08x\n", tmp.i);
+        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
         tmp.f = query_points_z_[i];
-        fprintf(fpz, "%08x\n", tmp.i);
+        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
       }
       fclose(fpx);
       fclose(fpy);
@@ -521,11 +519,11 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
       fprintf(fpz, "input_points_z:\n");
       for (int i = 0; i < n_query_; i++) {
         tmp.f = input_points_x_[i];
-        fprintf(fpx, "%08x\n", tmp.i);
+        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
         tmp.f = input_points_y_[i];
-        fprintf(fpy, "%08x\n", tmp.i);
+        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
         tmp.f = input_points_z_[i];
-        fprintf(fpz, "%08x\n", tmp.i);
+        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
       }
       fclose(fpx);
       fclose(fpy);
@@ -836,6 +834,8 @@ int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::copyToOCLMem
   OCL_WRITE_BUFFER_CHECK(Queue_, d_score_gradients_, CL_TRUE, 0, score_gradients_size_, score_gradients_, 0, NULL, NULL);
   OCL_WRITE_BUFFER_CHECK(Queue_, d_hessians_, CL_TRUE, 0, hessians_size_, hessians_, 0, NULL, NULL);
 
+  OCL_WRITE_BUFFER_CHECK(Queue_, target_cells_.d_kdtree_root_, CL_TRUE, 0, target_cells_.kdtree_size_, target_cells_.kdtree_root_, 0, NULL, NULL);
+
   return 0;
 }
 
@@ -854,7 +854,8 @@ int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDeriv
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 4, sizeof(cl_mem), (void *)&target_cells_.d_map_points_y_); // ok
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 5, sizeof(cl_mem), (void *)&target_cells_.d_map_points_z_); // ok
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 6, sizeof(cl_mem), (void *)&target_cells_.d_node_indexes_); // ok
-  OCL_SET_KERNEL_ARG_SVM_CHECK(k_compute_derivatives_, 7, target_cells_.kdtree_root_); // ok
+  OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 7, sizeof(cl_mem), (void *)&target_cells_.d_kdtree_root_); // ok
+  // OCL_SET_KERNEL_ARG_SVM_CHECK(k_compute_derivatives_, 7, target_cells_.kdtree_root_); // ok
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 8, sizeof(int), (void *)&n_query_); // ok
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 9, sizeof(int), (void *)&limit_); // ok
   OCL_SET_KERNEL_ARG_CHECK(k_compute_derivatives_, 10, sizeof(float), (void *)&resolution_); // ok
