@@ -65,10 +65,22 @@ typedef struct tag_kdtree_node_petit {
   int left_right_index; // [upper 16bit is left, lower 16bit is right]
   int axis;
   float axis_val;
-  global struct tag_kdtree_node_petit * parent;
-  global struct tag_kdtree_node_petit * child1;
-  global struct tag_kdtree_node_petit * child2;
+  // global struct tag_kdtree_node_petit * parent;
+  // global struct tag_kdtree_node_petit * child1;
+  // global struct tag_kdtree_node_petit * child2;
+  int parent;
+  int child1;
+  int child2;
 } kdtree_node_petit;
+
+global kdtree_node_petit * get_node(global kdtree_node_petit * root, int addr) {
+  const int base = 0x20120000;
+  if (addr == 0) {
+    return NULL;
+  }
+  int index = (addr - base) / 24;
+  return &(root[index]);
+}
 
 /** \brief Compute point derivatives.
  * \note Equation 6.18-21 [Magnusson 2009].
@@ -748,7 +760,7 @@ void radiusSearch(
   reference_point[2] = *lidar_point_z;
   reference_point[3] = 0.0;
 
-  global kdtree_node_petit  *previous_node = root_node->parent;
+  global kdtree_node_petit  *previous_node = get_node(root_node, root_node->parent);
   global kdtree_node_petit  *current_node = root_node;
   int neighbors_count = 0;
 
@@ -778,7 +790,7 @@ void radiusSearch(
       }
       // get back to parent node
       previous_node = current_node;
-      current_node = current_node->parent;
+      current_node = get_node(root_node, current_node->parent);
     } else {
       // select best_node, which to be searched first
       float val = reference_point[current_node->axis];
@@ -789,24 +801,24 @@ void radiusSearch(
 
       // not to select NULL child
       if (!current_node->child1) {
-        best_node = current_node->child2;
-        other_node = current_node->child1;
+        best_node = get_node(root_node, current_node->child2);
+        other_node = get_node(root_node, current_node->child1);
       } else if (!current_node->child2) {
-        best_node = current_node->child1;
-        other_node = current_node->child2;
+        best_node = get_node(root_node, current_node->child1);
+        other_node = get_node(root_node, current_node->child2);
       } else {
         // both nodes are not NULL
         if (diff < 0) {
-          best_node = current_node->child1;
-          other_node = current_node->child2;
+          best_node = get_node(root_node, current_node->child1);
+          other_node = get_node(root_node, current_node->child2);
         } else {
-          best_node = current_node->child2;
-          other_node = current_node->child1;
+          best_node = get_node(root_node, current_node->child2);
+          other_node = get_node(root_node, current_node->child1);
         }
       }
 
       // calc distance, if this is the first time to visit
-      if (previous_node == current_node->parent) {
+      if (previous_node == get_node(root_node, current_node->parent)) {
         int index = node_indexes[left_index + (right_index - left_index-1) / 2];
         float map_point[4];
         map_point[0] = map_points_x[index];
@@ -829,14 +841,13 @@ void radiusSearch(
         current_node = best_node;
         continue;
       }
-
       // return from the search of first child
       if (previous_node == best_node) {
         // test if there are neighbors below the other subtree
         if (fabs(diff) > radius) {
           // if nothing, back to parent node
           previous_node = current_node;
-          current_node = current_node->parent;
+          current_node = get_node(root_node, current_node->parent);
           continue;
         }
 
@@ -855,12 +866,12 @@ void radiusSearch(
       if (previous_node == other_node) {
         // back to parent node
         previous_node = current_node;
-        current_node = current_node->parent;
+        current_node = get_node(root_node, current_node->parent);
         continue;
       }
 
       // error
-      printf("radiusSearch error\n");
+      // printf("radiusSearch error\n");
       break;
     }
   }
