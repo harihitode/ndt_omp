@@ -42,19 +42,19 @@
  */
 
 /** \brief Simple structure of a kdtree node. */
-typedef struct tag_kdtree_node_petit {
+typedef struct tag_kdtree_node {
   int left_right_index; // [upper 16bit is left, lower 16bit is right]
   int axis;
   float axis_val;
-  // global struct tag_kdtree_node_petit * parent;
-  // global struct tag_kdtree_node_petit * child1;
-  // global struct tag_kdtree_node_petit * child2;
+  // global struct tag_kdtree_node * parent;
+  // global struct tag_kdtree_node * child1;
+  // global struct tag_kdtree_node * child2;
   int parent;
   int child1;
   int child2;
-} kdtree_node_petit;
+} kdtree_node;
 
-global kdtree_node_petit * get_node(global kdtree_node_petit * root, int addr) {
+global kdtree_node * get_node(global kdtree_node * root, int addr) {
   const int base = 0x20120000;
   if (addr == 0) {
     return NULL;
@@ -737,7 +737,7 @@ void radiusSearch(const global float * lidar_point_x,
                   const global float * map_points_y,
                   const global float * map_points_z,
                   const global int * node_indexes,
-                  global kdtree_node_petit * root_node,
+                  global kdtree_node * root_node,
                   const int n, const int limit, const float radius,
                   global int * neighbor_candidate_indexes,
                   global float * neighbor_candidate_dists)
@@ -747,119 +747,118 @@ void radiusSearch(const global float * lidar_point_x,
   reference_point[1] = *lidar_point_y;
   reference_point[2] = *lidar_point_z;
 
-  global kdtree_node_petit  *previous_node = get_node(root_node, root_node->parent);
-  global kdtree_node_petit  *current_node = root_node;
+  global kdtree_node * previous_node = get_node(root_node, root_node->parent);
+  global kdtree_node * current_node = root_node;
   int neighbors_count = 0;
 
   float dist;
   // radius search
-  while (current_node) {
-    int left_index = (current_node->left_right_index >> 16) & 0x0000FFFF;
-    int right_index = (current_node->left_right_index) & 0x0000FFFF;
-    if ((!current_node->child1) && (!current_node->child2)) {
-      // reached to leaf node
-      for (int i = left_index; i < right_index; ++i) {
-        int index = node_indexes[i];
-        float map_point[3];
-        map_point[0] = map_points_x[index];
-        map_point[1] = map_points_y[index];
-        map_point[2] = map_points_z[index];
-        dist = calculateDistance(reference_point, map_point);
-        if (dist < radius) {
-          neighbor_candidate_indexes[neighbors_count] = index;
-          neighbor_candidate_dists[neighbors_count] = dist;
-          neighbors_count++;
-        }
-        if (neighbors_count >= limit) {
-          break;
-        }
-      }
-      // get back to parent node
-      previous_node = current_node;
-      current_node = get_node(root_node, current_node->parent);
-    } else {
-      // select best_node, which to be searched first
-      float val = reference_point[current_node->axis];
-      float diff = val - current_node->axis_val;
+  while ((current_node) && (neighbors_count < limit)) {
+    int left_index = (current_node->left_right_index >> 16) & 0x0000ffff;
+    int right_index = current_node->left_right_index & 0x0000ffff;
+    // printf("%08x %d - %d\n", current_node - root_node, left_index, right_index);
+    // select best_node, which to be searched first
+    float val = reference_point[current_node->axis];
+#ifdef HORNET
+    float diff = val - current_node->axis_val;
+#else
+    union {
+      int i;
+      float f;
+    } axis_val;
+    axis_val.i = current_node->axis_val;
+    float diff = val - axis_val.f;
+#endif
+    global kdtree_node * best_node;
+    global kdtree_node * other_node;
 
-      global kdtree_node_petit * best_node;
-      global kdtree_node_petit * other_node;
-
-      // not to select NULL child
-      if (!current_node->child1) {
-        best_node = get_node(root_node, current_node->child2);
-        other_node = get_node(root_node, current_node->child1);
-      } else if (!current_node->child2) {
+    // not to select NULL child
+    if (!current_node->child1) {
+      best_node = get_node(root_node, current_node->child2);
+      other_node = get_node(root_node, current_node->child1);
+    } else if (!current_node->child2) {
+      best_node = get_node(root_node, current_node->child1);
+      other_node = get_node(root_node, current_node->child2);
+    } else if (current_node->child1 && current_node->child2) {
+      // both node exists
+      if (diff < 0) {
         best_node = get_node(root_node, current_node->child1);
         other_node = get_node(root_node, current_node->child2);
       } else {
-        // both nodes are not NULL
-        if (diff < 0) {
-          best_node = get_node(root_node, current_node->child1);
-          other_node = get_node(root_node, current_node->child2);
-        } else {
-          best_node = get_node(root_node, current_node->child2);
-          other_node = get_node(root_node, current_node->child1);
-        }
+        best_node = get_node(root_node, current_node->child2);
+        other_node = get_node(root_node, current_node->child1);
       }
+    } else {
+      best_node = NULL;
+      other_node = NULL;
+    }
 
-      // calc distance, if this is the first time to visit
-      if (previous_node == get_node(root_node, current_node->parent)) {
-        int index = node_indexes[left_index + (right_index - left_index-1) / 2];
-        float map_point[3];
+    // print_console_h(best_node - root_node);
+    // first arriving of this node
+    if (previous_node == get_node(root_node, current_node->parent)) {
+      int index;
+      float map_point[3];
+      if (best_node == NULL && other_node == NULL) {
+        //reached to leaf node
+        for (int i = left_index; i < right_index; ++i) {
+          index = node_indexes[i];
+          map_point[0] = map_points_x[index];
+          map_point[1] = map_points_y[index];
+          map_point[2] = map_points_z[index];
+          dist = calculateDistance(reference_point, map_point);
+          if (dist < radius) {
+            neighbor_candidate_indexes[neighbors_count] = index;
+            // print_console_h(neighbor_candidate_indexes[neighbors_count]);
+            neighbor_candidate_dists[neighbors_count] = dist;
+            neighbors_count++;
+          }
+        }
+        // get back to parent node
+        previous_node = current_node;
+        current_node = get_node(root_node, current_node->parent);
+      } else {
+        index = node_indexes[left_index + ((right_index - left_index - 1) >> 1)]; // "/ 2"
         map_point[0] = map_points_x[index];
         map_point[1] = map_points_y[index];
         map_point[2] = map_points_z[index];
-
         dist = calculateDistance(reference_point, map_point);
         if (dist < radius) {
           neighbor_candidate_indexes[neighbors_count] = index;
+          // print_console_h(neighbor_candidate_indexes[neighbors_count]);
           neighbor_candidate_dists[neighbors_count] = dist;
           neighbors_count++;
         }
-        if (neighbors_count >= limit) {
-          break;
-        }
-
         // move to the child node to be searched first
         previous_node = current_node;
         current_node = best_node;
-        continue;
       }
+    } else {
       // return from the search of first child
       if (previous_node == best_node) {
         // test if there are neighbors below the other subtree
         if (fabs(diff) > radius) {
-          // if nothing, back to parent node
+          // if no neighbors, back to parent node
           previous_node = current_node;
           current_node = get_node(root_node, current_node->parent);
-          continue;
-        }
-
-        // go to another subtree
-        if (other_node) {
-          previous_node = current_node;
-          current_node = other_node;
-          continue;
         } else {
-          // enable checked flag, if the other subtree is NULL
-          previous_node = other_node;
+          // go to another subtree
+          if (other_node) {
+            previous_node = current_node;
+            current_node = other_node;
+          } else {
+            // mark checked flag, if the other subtree is NULL
+            previous_node = other_node;
+          }
         }
-      }
-
-      // search for both subtrees is completed
-      if (previous_node == other_node) {
-        // back to parent node
+      } else {
+        // searches for both subtrees are completed, back to parent
         previous_node = current_node;
         current_node = get_node(root_node, current_node->parent);
-        continue;
       }
-
-      // error
-      // printf("radiusSearch error\n");
-      break;
     }
   }
+  // print_console(get_global_id(0));
+  return;
 }
 
 /** \brief Compute derivatives of probability function w.r.t. the transformation vector in OpenCL.
@@ -897,7 +896,7 @@ kernel void computeDerivativesCL(const global float * lidar_points_x,
                                  const global float * map_points_y,
                                  const global float * map_points_z,
                                  const global int * node_indexes,
-                                 global kdtree_node_petit * root_node,
+                                 global kdtree_node * root_node,
                                  const int n,
                                  const int limit,
                                  const float radius,
