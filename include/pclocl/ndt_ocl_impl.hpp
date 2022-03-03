@@ -193,8 +193,6 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
   gauss_d1_ = -log ( gauss_c1 + gauss_c2 ) - gauss_d3_;
   gauss_d2_ = -2 * log ((-log ( gauss_c1 * exp ( -0.5 ) + gauss_c2 ) - gauss_d3_) / gauss_d1_);
 
-  std::cerr << "computeTransformation Start" << std::endl;
-
   if (guess != Eigen::Matrix4f::Identity ())
   {
     // Initialise final transformation to the guessed one
@@ -240,7 +238,6 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
     {
       trans_probability_ = score / static_cast<double> (input_->points.size ());
       converged_ = delta_p_norm == delta_p_norm;
-      std::cerr << "delta_p_norm: " << delta_p_norm << std::endl;
       return;
     }
 
@@ -265,7 +262,6 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeTransform
     if (nr_iterations_ > max_iterations_ ||
         (nr_iterations_ && (std::fabs (delta_p_norm) < transformation_epsilon_)))
     {
-      std::cerr << "Iteration: " << nr_iterations_ << " converged." << std::endl;
       converged_ = true;
     }
 
@@ -525,9 +521,6 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
   releaseOCLMemoryObjects();
 
   for (int i = 0; i < n_query_; i++) {
-    if (i == 0) {
-      std::cerr << "score_[0]: " << scores_[0] << std::endl;
-    }
     score += scores_[i];
     for (int j = 0; j < 6; j++) {
       for (int k = 0; k < 1; k++) {
@@ -540,13 +533,13 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
       }
     }
   }
-  int num_neighborhood = 0;
-  for (int i = 0; i < limit_ * n_query_; i++) {
-    if (neighbor_candidate_indexes_[i] != -1) {
-      num_neighborhood++;
-    }
-  }
-  std::cerr << "Iteration: " << nr_iterations_ << ", Score: " << score << ", Neighbers: " << num_neighborhood << std::endl;
+  // int num_neighborhood = 0;
+  // for (int i = 0; i < limit_ * n_query_; i++) {
+  //   if (neighbor_candidate_indexes_[i] != -1) {
+  //     num_neighborhood++;
+  //   }
+  // }
+
   return (score);
 }
 
@@ -793,15 +786,10 @@ template <typename PointSource, typename PointTarget>
 int pclocl::NormalDistributionsTransform<PointSource, PointTarget>::readOCLMemoryObjects()
 {
   OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidates_, CL_TRUE, 0, neighbor_candidates_size_int_, neighbor_candidate_indexes_, 0, NULL, NULL);
-  std::cerr << "neighbor_candidate read: " << neighbor_candidates_size_int_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_neighbor_candidate_dists_, CL_TRUE, 0, neighbor_candidates_size_float_, neighbor_candidate_dists_, 0, NULL, NULL);
-  std::cerr << "neighbor_candidates_dist read: " << neighbor_candidates_size_float_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_scores_, CL_TRUE, 0, score_size_, scores_, 0, NULL, NULL);
-  std::cerr << "scores read: " << score_size_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_score_gradients_, CL_TRUE, 0, score_gradients_size_, score_gradients_, 0, NULL, NULL);
-  std::cerr << "score_gradients read: " << score_gradients_size_ << std::endl;
   OCL_READ_BUFFER_CHECK(Queue_, d_hessians_, CL_TRUE, 0, hessians_size_, hessians_, 0, NULL, NULL);
-  std::cerr << "hessians_size read: " << hessians_size_ << std::endl;
   return 0;
 }
 
