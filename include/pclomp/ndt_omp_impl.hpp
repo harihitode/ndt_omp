@@ -73,6 +73,8 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::NormalDistributi
 
   search_method = DIRECT7;
   num_threads_ = omp_get_max_threads();
+
+  computeTransformationCall_ = 0;
 }
 
 
@@ -188,6 +190,56 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
 	Eigen::Matrix<double, 6, 1> &p,
 	bool compute_hessian)
 {
+  union f_and_i {
+    uint32_t i;
+    float f;
+  } tmp;
+  if (computeTransformationCall_++ == 10) {
+    {
+      FILE * fpx = fopen("omp_query_points_x.txt", "w");
+      FILE * fpy = fopen("omp_query_points_y.txt", "w");
+      FILE * fpz = fopen("omp_query_points_z.txt", "w");
+      fprintf(fpx, "# big endian\n");
+      fprintf(fpy, "# big endian\n");
+      fprintf(fpz, "# big endian\n");
+      fprintf(fpx, "query_points_x:\n");
+      fprintf(fpy, "query_points_y:\n");
+      fprintf(fpz, "query_points_z:\n");
+      for (int i = 0; i < input_->points.size(); i++) {
+        tmp.f = trans_cloud.points[i].x;
+        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
+        tmp.f = trans_cloud.points[i].y;
+        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
+        tmp.f = trans_cloud.points[i].z;
+        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
+      }
+      fclose(fpx);
+      fclose(fpy);
+      fclose(fpz);
+    }
+    {
+      FILE * fpx = fopen("omp_input_points_x.txt", "w");
+      FILE * fpy = fopen("omp_input_points_y.txt", "w");
+      FILE * fpz = fopen("omp_input_points_z.txt", "w");
+      fprintf(fpx, "# big endian\n");
+      fprintf(fpy, "# big endian\n");
+      fprintf(fpz, "# big endian\n");
+      fprintf(fpx, "input_points_x:\n");
+      fprintf(fpy, "input_points_y:\n");
+      fprintf(fpz, "input_points_z:\n");
+      for (int i = 0; i < input_->points.size(); i++) {
+        tmp.f = input_->points[i].x;
+        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
+        tmp.f = input_->points[i].y;
+        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
+        tmp.f = input_->points[i].z;
+        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
+      }
+      fclose(fpx);
+      fclose(fpy);
+      fclose(fpz);
+    }
+  }
 	score_gradient.setZero();
 	hessian.setZero();
 	double score = 0;
@@ -285,7 +337,11 @@ pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
 		score_gradient += score_gradients[i];
 		hessian += hessians[i];
 	}
-
+  int num_neighborhood = 0;
+  for (auto thread_neighborhood : neighborhoods) {
+    num_neighborhood += thread_neighborhood.size();
+  }
+  std::cerr << "Iteration: " << nr_iterations_ << ", Score: " << score << ", Neighbers: " << num_neighborhood << std::endl;
 	return (score);
 }
 

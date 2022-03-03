@@ -526,10 +526,9 @@ namespace pclomp
 
 	public:
 		NeighborSearchMethod search_method;
-
+    int computeTransformationCall_;
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 	};
-
 }
 
 #endif // PCL_REGISTRATION_NDT_H_
