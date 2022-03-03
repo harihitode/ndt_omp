@@ -41,25 +41,6 @@
  *
  */
 
-/** \brief Simple structure to hold 3-D position and id */
-typedef struct point {
-  float x, y, z;
-  int id;
-} point;
-
-/** \brief Simple structure of a kdtree node. */
-typedef struct tag_kdtree_node {
-  int depth;
-  int left_index, right_index;
-  float rightmost, leftmost, upmost, downmost, zlowmost, zupmost;
-  point location;
-  int axis;
-  float axis_val;
-  global struct tag_kdtree_node * parent;
-  global struct tag_kdtree_node * child1;
-  global struct tag_kdtree_node * child2;
-} kdtree_node;
-
 /** \brief Simple structure of a kdtree node. */
 typedef struct tag_kdtree_node_petit {
   int left_right_index; // [upper 16bit is left, lower 16bit is right]
@@ -245,10 +226,11 @@ void computePointDerivatives(const float x[4], float point_gradient_[4][6], floa
   point_hessian_[23][5] = f[3];
 }
 
-float updateDerivatives(
-                        float score_gradient[6], float hessian[6][6], const float point_gradient4[4][6],
-                        const float point_hessian_[24][6], const float x_trans[3], global const float c_inv[3][3], const float gauss_d1_,
-                        const float gauss_d2_, const float gauss_d3_)
+float updateDerivatives(float score_gradient[6], float hessian[6][6],
+                        const float point_gradient4[4][6],
+                        const float point_hessian_[24][6],
+                        const float x_trans[3], global const float c_inv[3][3],
+                        const float gauss_d1_, const float gauss_d2_, const float gauss_d3_)
 {
   float x_trans4[4];
   x_trans4[0] = x_trans[0];
@@ -748,11 +730,17 @@ float calculateDistance(const float point1[4], const float point2[4])
  * \param[out] neighbor_candidate_indexes 1-D array of indexes of neighbor candidates (? elements)
  * \param[out] neighbor_candidate_dists 1-D array of distances of neighbor candidates (? elements)
  */
-void radiusSearch(
-                  const global float * lidar_point_x, const global float * lidar_point_y, const global float * lidar_point_z,
-                  const global float * map_points_x, const global float * map_points_y, const global float * map_points_z,
-                  const global int * node_indexes, global kdtree_node_petit * root_node, const int n, const int limit, const float radius,
-                  global int * neighbor_candidate_indexes, global float * neighbor_candidate_dists)
+void radiusSearch(const global float * lidar_point_x,
+                  const global float * lidar_point_y,
+                  const global float * lidar_point_z,
+                  const global float * map_points_x,
+                  const global float * map_points_y,
+                  const global float * map_points_z,
+                  const global int * node_indexes,
+                  global kdtree_node_petit * root_node,
+                  const int n, const int limit, const float radius,
+                  global int * neighbor_candidate_indexes,
+                  global float * neighbor_candidate_dists)
 {
   float reference_point[4];
   reference_point[0] = *lidar_point_x;
@@ -1000,8 +988,10 @@ kernel void computeDerivativesCL(const global float * lidar_points_x,
       computePointDerivatives(x, point_gradient_, point_hessian_, j_ang, h_ang);
       // Update score, gradient and hessian, lines 19-21 in Algorithm 2, according to Equations 6.10, 6.12 and 6.13,
       // respectively [Magnusson 2009]
-      score_pt += updateDerivatives(
-                                    score_gradient_pt, hessian_pt, point_gradient_, point_hessian_, x_trans, map_inverse_cov[candidate_index],
+      score_pt += updateDerivatives(score_gradient_pt, hessian_pt,
+                                    point_gradient_,
+                                    point_hessian_, x_trans,
+                                    map_inverse_cov[candidate_index],
                                     gauss_d1, gauss_d2, gauss_d3);
     }
   }
