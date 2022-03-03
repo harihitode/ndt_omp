@@ -261,6 +261,7 @@ namespace pclocl
 
       /** \brief KdTree generated using \ref voxel_centroids_ (used for searching). */
       kdtree_node_petit * kdtree_root_;
+      size_t kdtree_size_;
 
       /** \brief array of points of \ref voxel_centroids_. */
       point datapoints_[MAX_PCL_MAP_NUM];
@@ -287,6 +288,7 @@ namespace pclocl
       cl_mem d_map_points_x_, d_map_points_y_, d_map_points_z_;
       cl_mem d_map_mean_, d_map_inverse_cov_;
       cl_mem d_node_indexes_;
+      cl_mem d_kdtree_root_;
 
     public:
 
@@ -408,7 +410,7 @@ namespace pclocl
           return;
         }
         // Initiates kdtree of the centroids of voxels containing a sufficient number of points
-        for (int i = 0; i < num_centroids_; i++) {
+        for (size_t i = 0; i < num_centroids_; i++) {
           datapoints_[i].x = map_points_x_[i] = voxel_centroids_->points[i].x;
           datapoints_[i].y = map_points_y_[i] = voxel_centroids_->points[i].y;
           datapoints_[i].z = map_points_z_[i] = voxel_centroids_->points[i].z;
@@ -429,10 +431,10 @@ namespace pclocl
           const uint32_t root_address = 0x20120000; // SPM1
           const uint32_t tree_node_size = 4 + 4 + 4 + (4 * 3);
           FILE * tree_file = fopen("sample_tree.txt", "w");
-          fprintf(tree_file, "# SPM1 (note; big-endian); %08x\n", root_address);
+          fprintf(tree_file, "# SPM2 (note; big-endian); %08x\n", root_address);
           fprintf(tree_file, "# tree size; %08x\n", tree_node_size);
           fprintf(tree_file, "kdtree_root:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             fprintf(tree_file, "%08x\n", kdtree_root_[i].left_right_index);
             fprintf(tree_file, "%08x\n", kdtree_root_[i].axis);
             union f_and_i {
@@ -440,7 +442,7 @@ namespace pclocl
               float f;
             } axis_val;
             axis_val.f = kdtree_root_[i].axis_val;
-            fprintf(tree_file, "%08x\n", axis_val.i);
+            fprintf(tree_file, "%08x # %f\n", axis_val.i, axis_val.f);
             if (kdtree_root_[i].parent != NULL) {
               fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].parent - kdtree_root_) * tree_node_size);
             } else {
@@ -468,7 +470,7 @@ namespace pclocl
           FILE * fp = fopen("map_points_x.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "map_points_x:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             tmp.f = map_points_x_[i];
             fprintf(fp, "%08x\n", tmp.i);
           }
@@ -478,7 +480,7 @@ namespace pclocl
           FILE * fp = fopen("map_points_y.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "map_points_y:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             tmp.f = map_points_y_[i];
             fprintf(fp, "%08x\n", tmp.i);
           }
@@ -488,7 +490,7 @@ namespace pclocl
           FILE * fp = fopen("map_points_z.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "map_points_z:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             tmp.f = map_points_z_[i];
             fprintf(fp, "%08x\n", tmp.i);
           }
@@ -498,7 +500,7 @@ namespace pclocl
           FILE * fp = fopen("map_mean.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "map_mean:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             for (int j = 0; j < 3; j++) {
               tmp.f = map_mean_[i][j];
               fprintf(fp, "%08x\n", tmp.i);
@@ -510,7 +512,7 @@ namespace pclocl
           FILE * fp = fopen("map_inverse_cov.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "map_inverse_cov:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             for (int j = 0; j < 3; j++) {
               for (int k = 0; k < 3; k++) {
                 tmp.f = map_inverse_cov_[i][j][k];
@@ -524,7 +526,7 @@ namespace pclocl
           FILE * fp = fopen("node_indices.txt", "w");
           fprintf(fp, "# big endian\n");
           fprintf(fp, "node_indices:\n");
-          for (int i = 0; i < num_centroids_; i++) {
+          for (size_t i = 0; i < num_centroids_; i++) {
             fprintf(fp, "%08x\n", node_indexes_[i]);
           }
           fclose(fp);
