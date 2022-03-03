@@ -706,13 +706,13 @@ float updateDerivatives(float score_gradient[6], float hessian[6][6],
  * \param[in] point2 input point 2
  * \return the distance between two points
  */
-float calculateDistance(const float point1[4], const float point2[4])
+float calculateDistance(const float point1[3], const float point2[3])
 {
-  float dist_square[4];
-  for (int d = 0; d < 4; d++) {
+  float dist_square[3];
+  for (int d = 0; d < 3; d++) {
     dist_square[d] = (point1[d] - point2[d]) * (point1[d] - point2[d]);
   }
-  return sqrt(dist_square[0] + dist_square[1] + dist_square[2] + dist_square[3]);
+  return sqrt(dist_square[0] + dist_square[1] + dist_square[2]);
 }
 
 /** \brief Return the indexes of n neighbor voxels of the reference point.
@@ -742,11 +742,10 @@ void radiusSearch(const global float * lidar_point_x,
                   global int * neighbor_candidate_indexes,
                   global float * neighbor_candidate_dists)
 {
-  float reference_point[4];
+  float reference_point[3];
   reference_point[0] = *lidar_point_x;
   reference_point[1] = *lidar_point_y;
   reference_point[2] = *lidar_point_z;
-  reference_point[3] = 0.0;
 
   global kdtree_node_petit  *previous_node = get_node(root_node, root_node->parent);
   global kdtree_node_petit  *current_node = root_node;
@@ -761,11 +760,10 @@ void radiusSearch(const global float * lidar_point_x,
       // reached to leaf node
       for (int i = left_index; i < right_index; ++i) {
         int index = node_indexes[i];
-        float map_point[4];
+        float map_point[3];
         map_point[0] = map_points_x[index];
         map_point[1] = map_points_y[index];
         map_point[2] = map_points_z[index];
-        map_point[3] = 0.0;
         dist = calculateDistance(reference_point, map_point);
         if (dist < radius) {
           neighbor_candidate_indexes[neighbors_count] = index;
@@ -808,11 +806,10 @@ void radiusSearch(const global float * lidar_point_x,
       // calc distance, if this is the first time to visit
       if (previous_node == get_node(root_node, current_node->parent)) {
         int index = node_indexes[left_index + (right_index - left_index-1) / 2];
-        float map_point[4];
+        float map_point[3];
         map_point[0] = map_points_x[index];
         map_point[1] = map_points_y[index];
         map_point[2] = map_points_z[index];
-        map_point[3] = 0.0;
 
         dist = calculateDistance(reference_point, map_point);
         if (dist < radius) {
