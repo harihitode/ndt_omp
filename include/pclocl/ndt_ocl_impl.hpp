@@ -409,9 +409,9 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
       fclose(fp);
     }
     {
-      FILE * fp = fopen("neighbor_candidate_indicis.txt", "w");
+      FILE * fp = fopen("neighbor_candidate_indices.txt", "w");
       fprintf(fp, "# bin endian\n");
-      fprintf(fp, "neighbor_candidate_indicis:\n");
+      fprintf(fp, "neighbor_candidate_indices:\n");
       for (int i = 0; i < MAX_PCL_INPUT_NUM * LIMIT_NUM; i++) {
         fprintf(fp, "%08x\n", neighbor_candidate_indexes_[i]);
       }
