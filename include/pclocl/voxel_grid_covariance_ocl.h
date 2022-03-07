@@ -373,6 +373,40 @@ namespace pclocl
         return min_covar_eigvalue_mult_;
       }
 
+      inline FILE *
+      dumpFileOpen(const char * data_name)
+      {
+        char file_name[128];
+        sprintf(file_name, "%s.txt", data_name);
+        FILE * fp = fopen(file_name, "w");
+        fprintf(fp, "# %s:\n", data_name);
+        return fp;
+      }
+
+      inline void
+      dumpInt(FILE * fp, int data)
+      {
+        // int tmp =
+        //   ((data << 24) & 0xFF000000) |
+        //   ((data <<  8) & 0x00FF0000) |
+        //   ((data >>  8) & 0x0000FF00) |
+        //   ((data >> 24) & 0x000000FF);
+        int tmp = data;
+        fprintf(fp, "%08x\n", tmp);
+      }
+
+      inline void
+      dumpFloat(FILE * fp, float data)
+      {
+        union { uint32_t i; float f; } tmp;
+        tmp.f = data;
+        // tmp.i =
+        //   ((tmp.i << 24) & 0xFF000000) |
+        //   ((tmp.i <<  8) & 0x00FF0000) |
+        //   ((tmp.i >>  8) & 0x0000FF00) |
+        //   ((tmp.i >> 24) & 0x000000FF);
+        fprintf(fp, "%08x\n", tmp.i);
+      }
       /** \brief Filter cloud and initializes voxel structure.
        * \param[out] output cloud containing centroids of voxels containing a sufficient number of points
        * \param[in] searchable flag if voxel structure is searchable, if true then kdtree is built
@@ -430,104 +464,57 @@ namespace pclocl
         {
           const uint32_t root_address = 0x20120000; // SPM1
           const uint32_t tree_node_size = 4 + 4 + 4 + (4 * 3);
-          FILE * tree_file = fopen("sample_tree.txt", "w");
-          fprintf(tree_file, "# SPM2 (note; big-endian); %08x\n", root_address);
+          FILE * tree_file = dumpFileOpen("sample_tree");
+          fprintf(tree_file, "# SPM1 (note; little-endian); %08x\n", root_address);
           fprintf(tree_file, "# tree size; %08x\n", tree_node_size);
-          fprintf(tree_file, "kdtree_root:\n");
+          fprintf(tree_file, "# kdtree_root:\n");
           for (size_t i = 0; i < num_centroids_; i++) {
-            fprintf(tree_file, "%08x\n", kdtree_root_[i].left_right_index);
-            fprintf(tree_file, "%08x\n", kdtree_root_[i].axis);
-            union f_and_i {
-              uint32_t i;
-              float f;
-            } axis_val;
-            axis_val.f = kdtree_root_[i].axis_val;
-            fprintf(tree_file, "%08x # %f\n", axis_val.i, axis_val.f);
-            if (kdtree_root_[i].parent != NULL) {
-              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].parent - kdtree_root_) * tree_node_size);
-            } else {
-              fprintf(tree_file, "%08x\n", 0);
-            }
-            if (kdtree_root_[i].child1 != NULL) {
-              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].child1 - kdtree_root_) * tree_node_size);
-            } else {
-              fprintf(tree_file, "%08x\n", 0);
-            }
-            if (kdtree_root_[i].child2 != NULL) {
-              fprintf(tree_file, "%08lx\n", root_address + (kdtree_root_[i].child2 - kdtree_root_) * tree_node_size);
-            } else {
-              fprintf(tree_file, "%08x\n", 0);
-            }
+            dumpInt(tree_file, kdtree_root_[i].left_right_index);
+            dumpInt(tree_file, kdtree_root_[i].axis);
+            dumpFloat(tree_file, kdtree_root_[i].axis_val);
+            dumpInt(tree_file, ((kdtree_root_[i].parent == NULL) ? 0 : (int)root_address + (kdtree_root_[i].parent - kdtree_root_) * tree_node_size));
+            dumpInt(tree_file, ((kdtree_root_[i].child1 == NULL) ? 0 : (int)root_address + (kdtree_root_[i].child1 - kdtree_root_) * tree_node_size));
+            dumpInt(tree_file, ((kdtree_root_[i].child2 == NULL) ? 0 : (int)root_address + (kdtree_root_[i].child2 - kdtree_root_) * tree_node_size));
           }
           fclose(tree_file);
         }
-        // dump infos:
-        union f_and_i {
-          uint32_t i;
-          float f;
-        } tmp;
         {
-          FILE * fp = fopen("map_points_x.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "map_points_x:\n");
+          FILE * fpx = dumpFileOpen("map_points_x");
+          FILE * fpy = dumpFileOpen("map_points_y");
+          FILE * fpz = dumpFileOpen("map_points_z");
           for (size_t i = 0; i < num_centroids_; i++) {
-            tmp.f = map_points_x_[i];
-            fprintf(fp, "%08x\n", tmp.i);
+            dumpFloat(fpx, map_points_x_[i]);
+            dumpFloat(fpy, map_points_x_[i]);
+            dumpFloat(fpz, map_points_x_[i]);
           }
-          fclose(fp);
+          fclose(fpx);
+          fclose(fpy);
+          fclose(fpz);
         }
         {
-          FILE * fp = fopen("map_points_y.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "map_points_y:\n");
-          for (size_t i = 0; i < num_centroids_; i++) {
-            tmp.f = map_points_y_[i];
-            fprintf(fp, "%08x\n", tmp.i);
-          }
-          fclose(fp);
-        }
-        {
-          FILE * fp = fopen("map_points_z.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "map_points_z:\n");
-          for (size_t i = 0; i < num_centroids_; i++) {
-            tmp.f = map_points_z_[i];
-            fprintf(fp, "%08x\n", tmp.i);
-          }
-          fclose(fp);
-        }
-        {
-          FILE * fp = fopen("map_mean.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "map_mean:\n");
+          FILE * fp = dumpFileOpen("map_mean");
           for (size_t i = 0; i < num_centroids_; i++) {
             for (int j = 0; j < 3; j++) {
-              tmp.f = map_mean_[i][j];
-              fprintf(fp, "%08x\n", tmp.i);
+              dumpFloat(fp, map_mean_[i][j]);
             }
           }
           fclose(fp);
         }
         {
-          FILE * fp = fopen("map_inverse_cov.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "map_inverse_cov:\n");
+          FILE * fp = dumpFileOpen("map_inverse_cov");
           for (size_t i = 0; i < num_centroids_; i++) {
             for (int j = 0; j < 3; j++) {
               for (int k = 0; k < 3; k++) {
-                tmp.f = map_inverse_cov_[i][j][k];
-                fprintf(fp, "%08x\n", tmp.i);
+                dumpFloat(fp, map_inverse_cov_[i][j][k]);
               }
             }
           }
           fclose(fp);
         }
         {
-          FILE * fp = fopen("node_indices.txt", "w");
-          fprintf(fp, "# big endian\n");
-          fprintf(fp, "node_indices:\n");
+          FILE * fp = dumpFileOpen("node_indices");
           for (size_t i = 0; i < num_centroids_; i++) {
-            fprintf(fp, "%08x\n", node_indexes_[i]);
+            dumpInt(fp, node_indexes_[i]);
           }
           fclose(fp);
         }

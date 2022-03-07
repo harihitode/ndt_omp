@@ -281,6 +281,41 @@ int omp_get_max_threads() { return 1; }
 int omp_get_thread_num() { return 0; }
 #endif
 
+static FILE *
+dumpFileOpen(const char * data_name)
+{
+  char file_name[128];
+  sprintf(file_name, "%s.txt", data_name);
+  FILE * fp = fopen(file_name, "w");
+  fprintf(fp, "# %s:\n", data_name);
+  return fp;
+}
+
+static void
+dumpInt(FILE * fp, int data)
+{
+  // int tmp =
+  //   ((data << 24) & 0xFF000000) |
+  //   ((data <<  8) & 0x00FF0000) |
+  //   ((data >>  8) & 0x0000FF00) |
+  //   ((data >> 24) & 0x000000FF);
+  int tmp = data;
+  fprintf(fp, "%08x\n", tmp);
+}
+
+static void
+dumpFloat(FILE * fp, float data)
+{
+  union { uint32_t i; float f; } tmp;
+  tmp.f = data;
+  // tmp.i =
+  //   ((tmp.i << 24) & 0xFF000000) |
+  //   ((tmp.i <<  8) & 0x00FF0000) |
+  //   ((tmp.i >>  8) & 0x0000FF00) |
+  //   ((tmp.i >> 24) & 0x000000FF);
+  fprintf(fp, "%08x\n", tmp.i);
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 template<typename PointSource, typename PointTarget> double
 pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivatives(Eigen::Matrix<double, 6, 1> &score_gradient,
@@ -366,130 +401,89 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
   if (ret != 0) {
     std::cerr << "error : failed to read OpenCL memory objects" << std::endl;
   }
+
   // dump
-  union f_and_i {
-    uint32_t i;
-    float f;
-  } tmp;
   if (computeTransformationCall_++ == 10) {
     {
-      FILE * fp = fopen("scores.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "scores:\n");
+      FILE * fp = dumpFileOpen("scores");
       for (int i = 0; i < n_query_; i++) {
-        tmp.f = scores_[i];
-        fprintf(fp, "%08x\n", tmp.i);
+        dumpFloat(fp, scores_[i]);
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("score_gradients.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "score_gradients:\n");
+      FILE * fp = dumpFileOpen("score_gradients");
       for (int i = 0; i < n_query_; i++) {
         for (int j = 0; j < 6; j++) {
-          tmp.f = score_gradients_[i][j][0];
-          fprintf(fp, "%08x\n", tmp.i);
+          dumpFloat(fp, score_gradients_[i][j][0]);
         }
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("hessians.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "hessians:\n");
+      FILE * fp = dumpFileOpen("hessians");
       for (int i = 0; i < n_query_; i++) {
         for (int j = 0; j < 6; j++) {
           for (int k = 0; k < 6; k++) {
-            tmp.f = hessians_[i][j][k];
-            fprintf(fp, "%08x\n", tmp.i);
+            dumpFloat(fp, hessians_[i][j][k]);
           }
         }
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("neighbor_candidate_indices.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "neighbor_candidate_indices:\n");
+      FILE * fp = dumpFileOpen("neighbor_candidate_indices");
       for (int i = 0; i < MAX_PCL_INPUT_NUM * LIMIT_NUM; i++) {
-        fprintf(fp, "%08x\n", neighbor_candidate_indexes_[i]);
+        dumpInt(fp, neighbor_candidate_indexes_[i]);
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("neighbor_candidate_index_dists.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "neighbor_candidate_index_dists:\n");
+      FILE * fp = dumpFileOpen("neighbor_candidate_index_dists");
       for (int i = 0; i < MAX_PCL_INPUT_NUM * LIMIT_NUM; i++) {
-        tmp.f = neighbor_candidate_dists_[i];
-        fprintf(fp, "%08x\n", tmp.i);
+        dumpFloat(fp, neighbor_candidate_dists_[i]);
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("j_ang.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "j_ang:\n");
+      FILE * fp = dumpFileOpen("j_ang");
       for (int i = 0; i < 8; i++) {
         for (int j = 0; j < 4; j++) {
-          tmp.f = j_ang_array_[i][j];
-          fprintf(fp, "%08x\n", tmp.i);
+          dumpFloat(fp, j_ang_array_[i][j]);
         }
       }
       fclose(fp);
     }
     {
-      FILE * fp = fopen("h_ang.txt", "w");
-      fprintf(fp, "# bin endian\n");
-      fprintf(fp, "h_ang:\n");
+      FILE * fp = dumpFileOpen("h_ang");
       for (int i = 0; i < 16; i++) {
         for (int j = 0; j < 4; j++) {
-          tmp.f = h_ang_array_[i][j];
-          fprintf(fp, "%08x\n", tmp.i);
+          dumpFloat(fp, h_ang_array_[i][j]);
         }
       }
       fclose(fp);
     }
     {
-      FILE * fpx = fopen("query_points_x.txt", "w");
-      FILE * fpy = fopen("query_points_y.txt", "w");
-      FILE * fpz = fopen("query_points_z.txt", "w");
-      fprintf(fpx, "# big endian\n");
-      fprintf(fpy, "# big endian\n");
-      fprintf(fpz, "# big endian\n");
-      fprintf(fpx, "query_points_x:\n");
-      fprintf(fpy, "query_points_y:\n");
-      fprintf(fpz, "query_points_z:\n");
+      FILE * fpx = dumpFileOpen("query_points_x");
+      FILE * fpy = dumpFileOpen("query_points_y");
+      FILE * fpz = dumpFileOpen("query_points_z");
       for (int i = 0; i < n_query_; i++) {
-        tmp.f = query_points_x_[i];
-        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
-        tmp.f = query_points_y_[i];
-        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
-        tmp.f = query_points_z_[i];
-        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
+        dumpFloat(fpx, query_points_x_[i]);
+        dumpFloat(fpy, query_points_y_[i]);
+        dumpFloat(fpz, query_points_z_[i]);
       }
       fclose(fpx);
       fclose(fpy);
       fclose(fpz);
     }
     {
-      FILE * fpx = fopen("input_points_x.txt", "w");
-      FILE * fpy = fopen("input_points_y.txt", "w");
-      FILE * fpz = fopen("input_points_z.txt", "w");
-      fprintf(fpx, "# big endian\n");
-      fprintf(fpy, "# big endian\n");
-      fprintf(fpz, "# big endian\n");
-      fprintf(fpx, "input_points_x:\n");
-      fprintf(fpy, "input_points_y:\n");
-      fprintf(fpz, "input_points_z:\n");
+      FILE * fpx = dumpFileOpen("input_points_x");
+      FILE * fpy = dumpFileOpen("input_points_y");
+      FILE * fpz = dumpFileOpen("input_points_z");
       for (int i = 0; i < n_query_; i++) {
-        tmp.f = input_points_x_[i];
-        fprintf(fpx, "%08x # %f\n", tmp.i, tmp.f);
-        tmp.f = input_points_y_[i];
-        fprintf(fpy, "%08x # %f\n", tmp.i, tmp.f);
-        tmp.f = input_points_z_[i];
-        fprintf(fpz, "%08x # %f\n", tmp.i, tmp.f);
+        dumpFloat(fpx, input_points_x_[i]);
+        dumpFloat(fpy, input_points_y_[i]);
+        dumpFloat(fpz, input_points_z_[i]);
       }
       fclose(fpx);
       fclose(fpy);
@@ -497,24 +491,18 @@ pclocl::NormalDistributionsTransform<PointSource, PointTarget>::computeDerivativ
     }
     {
       FILE * fp = fopen("ndt_scalar_params.txt", "w");
-      fprintf(fp, "# big endian\n");
-      fprintf(fp, "# dump (170-0)\n");
-      fprintf(fp, "n_query:\n");
-      fprintf(fp, "%08lx\n", n_query_);
-      fprintf(fp, "limit:\n");
-      fprintf(fp, "%08x\n", limit_);
-      tmp.f = resolution_;
-      fprintf(fp, "resolution:\n");
-      fprintf(fp, "%08x\n", tmp.i);
-      tmp.f = gauss_d1_f_;
-      fprintf(fp, "gauss_d1_f_:\n");
-      fprintf(fp, "%08x\n", tmp.i);
-      tmp.f = gauss_d2_f_;
-      fprintf(fp, "gauss_d2_f_:\n");
-      fprintf(fp, "%08x\n", tmp.i);
-      tmp.f = gauss_d3_f_;
-      fprintf(fp, "gauss_d3_f_:\n");
-      fprintf(fp, "%08x\n", tmp.i);
+      fprintf(fp, "# n_query:\n");
+      dumpInt(fp, n_query_);
+      fprintf(fp, "# limit:\n");
+      dumpInt(fp, limit_);
+      fprintf(fp, "# resolution:\n");
+      dumpFloat(fp, resolution_);
+      fprintf(fp, "# gauss_d1_f_:\n");
+      dumpFloat(fp, gauss_d1_f_);
+      fprintf(fp, "# gauss_d2_f_:\n");
+      dumpFloat(fp, gauss_d2_f_);
+      fprintf(fp, "# gauss_d3_f_:\n");
+      dumpFloat(fp, gauss_d3_f_);
       fclose(fp);
     }
   }
