@@ -484,8 +484,8 @@ namespace pclocl
           FILE * fpz = dumpFileOpen("map_points_z");
           for (size_t i = 0; i < num_centroids_; i++) {
             dumpFloat(fpx, map_points_x_[i]);
-            dumpFloat(fpy, map_points_x_[i]);
-            dumpFloat(fpz, map_points_x_[i]);
+            dumpFloat(fpy, map_points_y_[i]);
+            dumpFloat(fpz, map_points_z_[i]);
           }
           fclose(fpx);
           fclose(fpy);
