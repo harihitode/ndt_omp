@@ -1601,7 +1601,7 @@ double pclocl::NormalDistributionsTransform<PointSource, PointTarget>::calculate
 }
 
 template<typename PointSource, typename PointTarget>
-double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::calculateTransformationProbability(const PointCloudSource & trans_cloud) const
+double pclocl::NormalDistributionsTransform<PointSource, PointTarget>::calculateTransformationProbability(const PointCloudSource & trans_cloud) const
 {
 	double score = 0;
 
@@ -1656,7 +1656,7 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::calculate
 }
 
 template<typename PointSource, typename PointTarget>
-double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::calculateNearestVoxelTransformationLikelihood(const PointCloudSource & trans_cloud) const
+double pclocl::NormalDistributionsTransform<PointSource, PointTarget>::calculateNearestVoxelTransformationLikelihood(const PointCloudSource & trans_cloud) const
 {
   double nearest_voxel_score = 0;
   size_t found_neigborhood_voxel_num = 0;
